@@ -912,3 +912,83 @@ fn helpにグローバルフラグの一覧が出る() {
         assert!(s.contains(f), "{f} がヘルプに無い:\n{s}");
     }
 }
+
+// ---- haj docs(SPEC §9.3): 探索に乗るドキュメント ----
+
+#[test]
+fn 同梱ドキュメントはどこでも読める() {
+    let sb = Sandbox::new("docs-core");
+    let cp = sb.path("nonexistent");
+    let cp = cp.to_str().unwrap();
+
+    let out = sb.haj(&sb.dir, cp, &["docs", "writing-commands"]);
+    assert!(out.status.success());
+    let s = stdout(&out);
+    assert!(s.contains("コマンドの作り方"), "同梱docが出ない:\n{s}");
+    assert!(s.contains("--haj-describe"), "規約の説明が無い:\n{s}");
+
+    let spec = stdout(&sb.haj(&sb.dir, cp, &["docs", "spec"]));
+    assert!(spec.contains("契約バージョン"), "SPECが埋め込まれていない");
+}
+
+#[test]
+fn ツリーのdocsは探索に乗り一覧に出自と見出しが出る() {
+    let sb = Sandbox::new("docs-tree");
+    sb.write(
+        "proj/.haj/docs/onboarding.md",
+        "# 新人向けセットアップ\n\nまず haj setup を打つ。\n",
+    );
+
+    let cp = sb.path("nonexistent");
+    let cp = cp.to_str().unwrap();
+
+    // プロジェクトの中では見える
+    let list = stdout(&sb.haj(&sb.path("proj"), cp, &["docs"]));
+    assert!(list.contains("onboarding"), "一覧に出ない:\n{list}");
+    assert!(
+        list.contains("新人向けセットアップ"),
+        "見出しが説明にならない:\n{list}"
+    );
+    assert!(
+        list.contains("writing-commands"),
+        "同梱も一覧に出るべき:\n{list}"
+    );
+
+    let body = stdout(&sb.haj(&sb.path("proj"), cp, &["docs", "onboarding"]));
+    assert!(body.contains("haj setup"), "本文が出ない:\n{body}");
+
+    // プロジェクトの外では見えない(境界はコマンドと同じ)
+    let outside = stdout(&sb.haj(&sb.dir, cp, &["docs"]));
+    assert!(
+        !outside.contains("onboarding"),
+        "境界を越えて漏れている:\n{outside}"
+    );
+}
+
+#[test]
+fn ツリーのdocsは同梱の同名トピックに勝つ() {
+    let sb = Sandbox::new("docs-shadow");
+    sb.write(
+        "proj/.haj/docs/writing-commands.md",
+        "# このプロジェクト流のコマンドの書き方\n",
+    );
+
+    let cp = sb.path("nonexistent");
+    let out = stdout(&sb.haj(
+        &sb.path("proj"),
+        cp.to_str().unwrap(),
+        &["docs", "writing-commands"],
+    ));
+    assert!(
+        out.contains("このプロジェクト流"),
+        "ツリー側が勝っていない:\n{out}"
+    );
+}
+
+#[test]
+fn 未知のトピックはエラー() {
+    let sb = Sandbox::new("docs-unknown");
+    let cp = sb.path("nonexistent");
+    let out = sb.haj(&sb.dir, cp.to_str().unwrap(), &["docs", "no-such-topic"]);
+    assert_eq!(out.status.code(), Some(1));
+}
