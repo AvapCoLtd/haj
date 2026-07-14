@@ -1,6 +1,6 @@
 [package]
 name = "haj"
-version = "0.9.1"
+version = "0.10.0"
 edition = "2021"
 rust-version = "1.74"
 description = "サブコマンドを探索して実行する、プロジェクトごとに中身が変わるジョブランナー"

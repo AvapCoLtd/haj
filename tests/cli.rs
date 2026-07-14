@@ -992,3 +992,75 @@ fn 未知のトピックはエラー() {
     let out = sb.haj(&sb.dir, cp.to_str().unwrap(), &["docs", "no-such-topic"]);
     assert_eq!(out.status.code(), Some(1));
 }
+
+// ---- エイリアス(SPEC §2.7): git 方式 ----
+
+/// XDG_CONFIG_HOME を差し替えて haj を走らせる(エイリアスのテスト用)。
+fn haj_with_config(sb: &Sandbox, cwd: &Path, args: &[&str]) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_haj"))
+        .args(args)
+        .current_dir(cwd)
+        .env("HAJ_COMMAND_PATH", sb.path("nonexistent"))
+        .env("HAJ_NO_CACHE", "1")
+        .env("HOME", &sb.dir)
+        .env("XDG_CONFIG_HOME", sb.path("xdgconf"))
+        .output()
+        .unwrap()
+}
+
+#[test]
+fn エイリアスは名前の位置で展開され残りの引数が続く() {
+    let sb = Sandbox::new("alias");
+    sb.write("xdgconf/haj/config", "alias.pj = -C proj\n");
+    sb.command(
+        "proj/.haj",
+        "deploy",
+        &conforming("デプロイ", "", "", "echo DEPLOYED $1"),
+    );
+
+    let out = haj_with_config(&sb, &sb.dir, &["pj", "deploy", "v2"]);
+    assert!(out.status.success(), "エイリアス越しに実行できない");
+    assert_eq!(stdout(&out).trim(), "DEPLOYED v2");
+}
+
+#[test]
+fn エイリアスは予約語を奪えない() {
+    let sb = Sandbox::new("alias-reserved");
+    sb.write("xdgconf/haj/config", "alias.help = -C proj\n");
+
+    let out = haj_with_config(&sb, &sb.dir, &["help"]);
+    assert!(out.status.success());
+    // 普通のヘルプが出る(展開されて proj へ行ったりしない)
+    assert!(stdout(&out).contains("haj自身"), "helpが奪われた");
+}
+
+#[test]
+fn whichとhelpと補完にエイリアスの素性が出る() {
+    let sb = Sandbox::new("alias-vis");
+    sb.write("xdgconf/haj/config", "alias.ie = -C ~/repos/ie\n");
+
+    let which = haj_with_config(&sb, &sb.dir, &["which", "ie"]);
+    assert!(which.status.success());
+    assert!(
+        stdout(&which).contains("alias.ie = -C ~/repos/ie"),
+        "whichが展開を見せない:\n{}",
+        stdout(&which)
+    );
+
+    let help = stdout(&haj_with_config(&sb, &sb.dir, &["help"]));
+    assert!(help.contains("エイリアス"), "helpに節が無い:\n{help}");
+    assert!(help.contains("ie"), "helpに名前が無い:\n{help}");
+
+    let comp = stdout(&haj_with_config(&sb, &sb.dir, &["__complete"]));
+    assert!(comp.contains("ie\t"), "補完に出ない:\n{comp}");
+}
+
+#[test]
+fn ハイフンcのチルダはhomeに展開される() {
+    let sb = Sandbox::new("chdir-tilde");
+    sb.command("sub/.haj", "inner", &conforming("内側", "", "", "true"));
+
+    // HOME = sb.dir なので ~/sub は sb.dir/sub
+    let out = haj_with_config(&sb, &sb.dir, &["-C", "~/sub", "inner"]);
+    assert!(out.status.success(), "チルダが展開されていない");
+}
