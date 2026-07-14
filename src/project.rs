@@ -76,6 +76,8 @@ pub enum Origin {
     Project(String),
     /// 個人用(`~/.config/haj/commands`)
     User,
+    /// インストール済みツリー(`haj tree install`。SPEC §9.5)
+    Tree(String),
     /// 全社/イメージ共通(`$HAJ_COMMAND_PATH`)
     System,
     /// PATH 上の `haj-<名前>`
@@ -91,6 +93,7 @@ impl Origin {
         match self {
             Origin::Project(name) => format!("[{name}]"),
             Origin::User => "[個人]".to_string(),
+            Origin::Tree(name) => format!("[{name}]"),
             Origin::System => "[共通]".to_string(),
             Origin::Path => "[PATH]".to_string(),
             Origin::Core => "[haj]".to_string(),

@@ -28,7 +28,8 @@ default:
   image: avap.plus/dockerhub/library/rust:1-alpine
   before_script:
     # rust:1-alpine には C リンカが無い。musl-dev を入れないと `cc` が見つからず落ちる。
-    - apk add --no-cache musl-dev >/dev/null
+    # git は haj tree のテストが使う(実行時依存ではなく委譲先)。
+    - apk add --no-cache musl-dev git >/dev/null
   cache:
     key:
       files:

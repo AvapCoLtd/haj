@@ -131,6 +131,7 @@ haj --version
 | A. プロジェクト | `<リポジトリ>/.haj/commands/<名前>` | そのリポジトリの中だけ | チームで共有する、リポジトリ固有のタスク |
 | B. グローバル | `$PATH` の `haj-<名前>` | どこでも | 個人ツール、パッケージマネージャで配るもの |
 | C. エイリアス | `~/.config/haj/config` または `.haj/config` の `alias.<名前>` | どこでも / そのプロジェクト | 打鍵の短縮。1行の委譲(scripts 相当) |
+| D. 共有ツリー | `haj tree install <gitのURL>` | どこでも | チームでコマンド・エイリアス集を配る |
 
 ### A. プロジェクトのコマンド(`.haj/commands/`)
 
@@ -242,6 +243,30 @@ $ haj test        # → docker compose exec app vendor/bin/phpunit --testdox
 
 **境界規則**: 1行で書けなくなったら `.haj/commands/` の実行ファイルに昇格する。
 委譲は宣言、ロジックはファイル(haj はタスクランナーを作らない)。
+
+### D. 共有ツリー(`haj tree`)
+
+コマンドのツリーを git リポジトリで配る。clone したディレクトリが探索に乗るだけで、
+パッケージマネージャではない。
+
+```sh
+haj tree install https://github.com/you/haj-tools    # 入れる(@<ref> で固定可)
+haj tree update                                       # 差分を見せてから更新
+haj tree list
+haj tree remove haj-tools
+```
+
+イメージに焼くなら `--global`(`/usr/local/share/haj/trees` に入る):
+
+```dockerfile
+RUN haj tree install --global https://github.com/you/haj-tools
+```
+
+リポジトリの形は2つ(`.haj/` があればそれ、無ければルートがツリー):
+ルート直下に `config` + `commands/` + `docs/` を置く配布専用の形と、
+`.haj/` を持つ普通の haj プロジェクトをそのまま入れる形。`config` の
+`alias.*` も効くので、**エイリアス集だけの配布**もできる。
+一覧には `[<ツリー名>]` として出る。
 
 ### 規約(A / B に共通)
 

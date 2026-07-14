@@ -87,7 +87,18 @@ pub fn command_dirs() -> Vec<Dir> {
         });
     }
 
-    // 3. システム共通
+    // 3. インストール済みツリー(haj tree install。SPEC §9.5)
+    for (name, dir) in crate::tree::installed() {
+        let d = crate::tree::tree_root(&dir).join("commands");
+        if d.is_dir() {
+            dirs.push(Dir {
+                path: d,
+                origin: Origin::Tree(name),
+            });
+        }
+    }
+
+    // 4. システム共通
     let cfg = crate::config::Config::load();
     let (system, _) = cfg.get("HAJ_COMMAND_PATH", "command_path", DEFAULT_COMMAND_PATH);
     for part in system.split(':').filter(|s| !s.is_empty()) {
@@ -142,6 +153,10 @@ pub fn doc_trees() -> Vec<(PathBuf, Origin)> {
         if d.is_dir() {
             trees.push((d, Origin::User));
         }
+    }
+
+    for (name, dir) in crate::tree::installed() {
+        trees.push((crate::tree::tree_root(&dir), Origin::Tree(name)));
     }
 
     let cfg = crate::config::Config::load();
@@ -316,6 +331,7 @@ pub fn is_reserved(name: &str) -> bool {
             | "sh"
             | "selfupgrade"
             | "secrets"
+            | "tree"
             | "__complete"
     )
 }

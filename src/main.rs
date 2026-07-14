@@ -17,6 +17,7 @@ mod docs;
 mod project;
 mod secrets;
 mod selfupgrade;
+mod tree;
 
 use std::io::Write;
 use std::os::unix::process::CommandExt;
@@ -134,6 +135,8 @@ fn main() {
             std::process::exit(0);
         }
         "selfupgrade" => selfupgrade::run(rest),
+        // 共有ツリーの取得と更新。SPEC §9.5。
+        "tree" => tree::run(rest),
         // 端末で読めるドキュメント。SPEC.md §9.3。
         "docs" => docs::run(rest),
         // 補完スクリプトを吐く。eval "$(haj completion zsh)" で使う。SPEC.md §9.4。

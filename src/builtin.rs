@@ -58,6 +58,10 @@ pub const ALL: &[Builtin] = &[
         name: "sh",
         describe: "シェルの1行をシークレットを注入して実行する (exec sh -c の省略形)",
     },
+    Builtin {
+        name: "tree",
+        describe: "共有ツリーの取得と更新 (install/update/list/remove)",
+    },
 ];
 
 pub fn find(name: &str) -> Option<&'static Builtin> {
@@ -147,7 +151,23 @@ haj exec sh -c '<コマンド>' の省略形。追加の引数は位置パラメ
   haj sh 'echo $1-$2' one two    → one-two
   haj sh -- ls -la               → ls -la
 
-展開の規則・HAJ_* を渡さないことは haj exec と同じ。詳細は SPEC.md §9.2。"
+展開の規則・環境変数の扱い (HAJ_PROJECT は渡る) は haj exec と同じ。詳細は SPEC.md §9.2。"
+            .to_string(),
+
+        "tree" => "\
+haj tree — 共有ツリーの取得と更新 (SPEC §9.5)。
+
+  haj tree install <gitのURL>[@<ref>] [--name <名前>]
+  haj tree update [<名前>]       差分を見せてから ff-only で更新 (省略で全部)
+  haj tree list                  名前 / 版 / コマンド数 / URL
+  haj tree remove <名前>
+
+git リポジトリを ~/.local/share/haj/trees/<名前> に置くだけ。入れたツリーは
+探索の対象になり、一覧に [<名前>] として出る。探索順は
+プロジェクト > 個人 > ツリー > 共通 ($HAJ_COMMAND_PATH)。
+
+ツリーの根はリポジトリの .haj/ (あれば) かルート。commands/ が無いものは
+ツリーとして認めない。git は CLI に委譲する (git が必要)。"
             .to_string(),
 
         "docs" => "\
@@ -259,6 +279,7 @@ pub fn complete(name: &str, words: &[String]) -> Vec<String> {
         }
         "docs" => crate::docs::complete(words),
         "completion" => crate::completion::complete(words),
+        "tree" => crate::tree::complete(words),
         "secrets" => {
             if words.is_empty() {
                 vec!["--check".to_string()]

@@ -1,9 +1,10 @@
 //! エイリアスの解決(SPEC §2.7)。
 //!
-//! 定義できる場所は2つで、近いスコープが勝つ:
+//! 定義できる場所は3つで、近いスコープが勝つ(コマンド探索と同じ並び):
 //!
 //!   1. プロジェクトの `.haj/config`(カレントから遡って近い順)
 //!   2. ユーザー設定 `~/.config/haj/config`
+//!   3. インストール済みツリーの `config`(§9.5 — エイリアス集を配れる)
 //!
 //! プロジェクト側に書けるのは package.json の scripts に相当する「1行の委譲」の
 //! ため(Issue #11)。ロジックを持つタスクは従来どおり `.haj/commands/` に置く
@@ -56,6 +57,19 @@ fn project_scopes() -> Vec<(std::collections::HashMap<String, String>, Origin)> 
     scopes
 }
 
+/// インストール済みツリーの定義(`config` の alias.*)を名前順に返す。
+/// ユーザー設定より遠いスコープ(コマンド探索の並びと同じ)。
+fn tree_scopes() -> Vec<(std::collections::HashMap<String, String>, Origin)> {
+    let mut scopes = Vec::new();
+    for (name, dir) in crate::tree::installed() {
+        let root = crate::tree::tree_root(&dir);
+        if let Ok(s) = std::fs::read_to_string(root.join("config")) {
+            scopes.push((crate::config::parse_kv(&s), Origin::Tree(name)));
+        }
+    }
+    scopes
+}
+
 /// 名前から展開を引く。プロジェクト(近い順) > ユーザー設定。
 /// 予約語は引かない(予約語 > エイリアス > 探索、の順は誰にも変えさせない)。
 pub fn lookup(name: &str) -> Option<Alias> {
@@ -74,12 +88,25 @@ pub fn lookup(name: &str) -> Option<Alias> {
         }
     }
     let cfg = crate::config::Config::load();
-    cfg.alias(name).map(|expansion| Alias {
-        name: name.to_string(),
-        desc: cfg.alias_desc(name),
-        expansion,
-        origin: Origin::User,
-    })
+    if let Some(expansion) = cfg.alias(name) {
+        return Some(Alias {
+            name: name.to_string(),
+            desc: cfg.alias_desc(name),
+            expansion,
+            origin: Origin::User,
+        });
+    }
+    for (map, origin) in tree_scopes() {
+        if let Some(v) = map.get(&key).filter(|v| !v.is_empty()) {
+            return Some(Alias {
+                name: name.to_string(),
+                expansion: v.clone(),
+                desc: desc_of(&map, name),
+                origin,
+            });
+        }
+    }
+    None
 }
 
 /// 呼べるエイリアスを全部返す(名前順)。同名は近いスコープが勝つ。
@@ -111,6 +138,20 @@ pub fn list() -> Vec<Alias> {
                 origin: Origin::User,
             },
         );
+    }
+
+    for (map, origin) in tree_scopes() {
+        for (name, v) in aliases_in(&map) {
+            push_unless_shadowed(
+                &mut out,
+                Alias {
+                    desc: desc_of(&map, &name),
+                    name,
+                    expansion: v,
+                    origin: origin.clone(),
+                },
+            );
+        }
     }
 
     out.sort_by(|a, b| a.name.cmp(&b.name));
