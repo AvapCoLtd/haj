@@ -1203,6 +1203,13 @@ fn completionのzsh版はevalしても補完関数を即実行しない() {
         s.contains("funcstack[1]"),
         "autoload と eval を見分けていない:\n{s}"
     );
+    // 委譲時、カーソル位置の語は引用符で保つこと。空語が配列から落ちると
+    // CURRENT が1になり、_normal が PATH 上の全コマンドを出してしまう。
+    assert!(
+        s.contains("\"${words[CURRENT]}\""),
+        "カーソル位置の語が引用されていない:\n{s}"
+    );
+
     // 即時呼び出しはガードの中だけ(スクリプトの最後は fi で閉じている)
     let last = s.lines().rfind(|l| !l.trim().is_empty()).unwrap();
     assert_eq!(

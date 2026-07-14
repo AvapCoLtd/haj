@@ -29,11 +29,15 @@ _haj() {
   # 2語目以降は当該コマンドに聞く。カーソル直前までの入力済みの語を渡す。
   cands=(${(f)"$(haj __complete ${words[2]} ${words[3,CURRENT-1]} 2>/dev/null)"})
 
-  # 委譲の指示: haj の外のコマンドなので、そのコマンド自身の補完に丸投げする
+  # 委譲の指示: haj の外のコマンドなので、そのコマンド自身の補完に丸投げする。
+  #
+  # カーソル位置の語は**引用符で保つ**こと。末尾スペースで TAB を押すとこの語は
+  # 空文字列で、引用しないと配列から落ちる。すると CURRENT が最後の実語を指し、
+  # _normal が「コマンド名の補完」を始めて PATH 上の全実行ファイルを出す。
   if [[ ${cands[1]} == '@delegate'$'\t'* ]]; then
-    local -a argv
-    argv=(${(ps:\t:)${cands[1]#@delegate$'\t'}})
-    words=($argv ${words[CURRENT]})
+    local -a delegated
+    delegated=(${(ps:\t:)${cands[1]#@delegate$'\t'}})
+    words=("${delegated[@]}" "${words[CURRENT]}")
     (( CURRENT = ${#words} ))
     _normal
     return
