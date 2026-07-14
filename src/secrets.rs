@@ -24,12 +24,6 @@ pub const DEFAULT_VAULT_LOGIN: &str = "off";
 /// vault 参照の解決に使う CLI。OpenBao なら設定で secrets.vault_cmd = bao。
 pub const DEFAULT_VAULT_CMD: &str = "vault";
 
-/// 展開は明示のオプトイン。clone した直後のリポジトリで勝手に金庫が開く、
-/// という事故を防ぐため、既定では何もしない。
-pub fn enabled() -> bool {
-    env::var("HAJ_SECRETS").map(|v| v == "1").unwrap_or(false)
-}
-
 /// 値が参照なら展開して Some を、参照でなければ None を返す(触らない)。
 /// 解決に失敗したら Err。呼び出し側は本体を実行せずに止まること(fail-fast)。
 ///
@@ -139,7 +133,7 @@ fn take_block(s: &str) -> Option<(&str, &str)> {
 }
 
 /// 明示的な受け渡し(SPEC §10.7)。サブコマンド名の**前**のグローバルフラグ。
-/// フラグを打ったこと自体が同意なので、HAJ_SECRETS のゲートは通らない。
+/// フラグを打ったこと自体が同意。haj は環境を勝手に走査しない。
 pub enum Delivery {
     /// `--secret <名前>=<値>` — 展開して環境変数で渡す。参照でなければ平文のまま
     Secret { name: String, value: String },
@@ -172,6 +166,37 @@ impl Delivery {
                     format!("--secretfile は <出力>=<テンプレート> で指定してください: {arg}")
                 }),
             other => Err(format!("不明なフラグです: {other}")),
+        }
+    }
+
+    /// 何が渡るのかを、**解決せずに**列挙する(`haj secrets --check`)。
+    /// 返すのは (種別, 名前, 値または参照)。金庫には触らない。
+    pub fn plan(&self) -> Result<Vec<(String, String, String)>, String> {
+        match self {
+            Delivery::Secret { name, value } => {
+                Ok(vec![("--secret".to_string(), name.clone(), value.clone())])
+            }
+            Delivery::EnvFile(file) => {
+                let content = std::fs::read_to_string(file)
+                    .map_err(|e| format!("--env {file}: 読めません: {e}"))?;
+                let mut rows: Vec<(String, String, String)> = crate::config::parse_kv(&content)
+                    .into_iter()
+                    .map(|(k, v)| ("--env".to_string(), k, v))
+                    .collect();
+                rows.sort();
+                Ok(rows)
+            }
+            Delivery::SecretFile { out, template } => {
+                let content = std::fs::read_to_string(template)
+                    .map_err(|e| format!("--secretfile {template}: 読めません: {e}"))?;
+                // テンプレート内の参照を数えるだけ。描画も解決もしない。
+                let refs = content.matches("{{").count() + content.matches("op://").count();
+                Ok(vec![(
+                    "--secretfile".to_string(),
+                    out.clone(),
+                    format!("{template} ({refs} 個の参照を描画)"),
+                )])
+            }
         }
     }
 
@@ -274,7 +299,7 @@ fn vault_fetch(path: &[&str], field: &str) -> Result<String, String> {
     } else {
         proc.arg(path.join("/"));
     }
-    run(proc, &cli, None)
+    run_cli(proc, &cli, None)
 }
 
 /// vault CLI のプロセスを作る。サーバは、環境に VAULT_ADDR / BAO_ADDR が
@@ -354,13 +379,13 @@ fn op_inject(value: &str) -> Result<String, String> {
     let cli = cli_for("HAJ_OP_CMD", "secrets.op_cmd", "op");
     let mut proc = Proc::new(&cli);
     proc.arg("inject");
-    run(proc, &cli, Some(value))
+    run_cli(proc, &cli, Some(value))
 }
 
 /// リゾルバCLIを実行して stdout を採る。stderr はそのまま流す(失敗の理由は
 /// CLI自身が一番よく知っている)。タイムアウトは設けない — op のタッチ認証など、
 /// 人を待つ場面が正当にある。規約フックの2秒とは別物。
-fn run(mut proc: Proc, cli: &str, stdin: Option<&str>) -> Result<String, String> {
+fn run_cli(mut proc: Proc, cli: &str, stdin: Option<&str>) -> Result<String, String> {
     proc.stdin(if stdin.is_some() {
         Stdio::piped()
     } else {
@@ -397,27 +422,43 @@ fn run(mut proc: Proc, cli: &str, stdin: Option<&str>) -> Result<String, String>
         .map_err(|_| format!("{cli} の出力が UTF-8 ではありません"))
 }
 
-/// `haj secrets` — 何が展開対象なのかを、解決せずに確かめる(SPEC §10.6)。
-/// 参照の対象(パス)は出すが、値は解決しない。金庫に問い合わせない。
-pub fn dry_run() -> ! {
-    if enabled() {
-        println!("HAJ_SECRETS=1 (展開は有効)");
-    } else {
-        println!("HAJ_SECRETS が設定されていません (展開は無効。参照はただの文字列として渡ります)");
+/// `haj secrets --check` — **何が渡るのかを、解決せずに**確かめる(SPEC §10.6)。
+///
+/// グローバルフラグ(`--secret` / `--env` / `--secretfile`)で渡そうとしているものを
+/// 列挙する。参照の**対象**(パス)は出すが、**値は解決しない** — 金庫に問い合わせない
+/// ので、OIDC ログインもタッチ認証も起きない(参照そのものは秘密ではない)。
+///
+///   haj --secret DB_PASS=vault://... --env ./mig.env secrets --check
+pub fn run(args: &[String], deliveries: &[Delivery]) -> ! {
+    if args.first().map(String::as_str) != Some("--check") {
+        eprintln!(
+            "haj: 使い方: haj [--secret <名前>=<値>]... [--env <ファイル>]... secrets --check"
+        );
+        std::process::exit(1);
     }
 
-    let mut refs: Vec<(String, String)> = env::vars().filter(|(_, v)| is_reference(v)).collect();
-    refs.sort();
+    if deliveries.is_empty() {
+        println!("渡すシークレットの指定がありません。");
+        println!("  haj --secret DB_PASS=vault://... --env ./mig.env secrets --check");
+        std::process::exit(0);
+    }
 
-    if refs.is_empty() {
-        println!("\n 展開対象の環境変数はありません。");
-    } else {
-        println!("\n 環境変数:");
-        let width = refs.iter().map(|(k, _)| k.len()).max().unwrap_or(8);
-        for (k, v) in &refs {
-            println!("   {k:width$}  {v}");
+    println!(" 実行時に渡るもの (値は解決していません):");
+    for d in deliveries {
+        match d.plan() {
+            Ok(rows) => {
+                for (kind, name, value) in rows {
+                    let mark = if is_reference(&value) { "→" } else { " " };
+                    println!("   {kind:10}  {name:20}  {mark} {value}");
+                }
+            }
+            Err(e) => {
+                eprintln!("haj: {e}");
+                std::process::exit(1);
+            }
         }
     }
+    println!("\n (→ が付いたものが展開されます。他は平文としてそのまま渡ります)");
     std::process::exit(0);
 }
 

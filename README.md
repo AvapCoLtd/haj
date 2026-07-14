@@ -104,6 +104,7 @@ haj config [--init]            設定の実効値と出所 (--init で雛形)
 haj completion <シェル>          補完スクリプトを出す
 haj exec <プログラム> [引数...]   PATH のコマンドを実行 (シークレット注入つき)
 haj sh '<コマンド>'              シェルの1行を実行 (同上)
+haj secrets --check            何が渡るのかを解決せずに確かめる
 haj selfupgrade                haj自身を更新する
 haj --version
 ```
@@ -356,7 +357,22 @@ $ haj config
 
 ```sh
 haj --secret DB_PASS=vault://secret/data/db/password mig up
-haj --secret TOKEN=op://Infra/ci/token exec sh -c 'curl -H "Authorization: Bearer $TOKEN" ...'
+haj --env ./mig.env mig up                          # key = value のファイルから
+haj --secretfile config.ini=config.ini.tpl app run  # テンプレートを 0600 で描画
+```
+
+**渡すものと相手は、人がその実行時に明示する。** haj が環境変数を勝手に走査して
+展開することはない(DB パスワードを必要としないコマンドに実体が渡ったり、信頼して
+いないリポジトリのコマンドに届いたりしないため)。
+
+何が渡るのかは、**金庫に触らずに**確認できる:
+
+```console
+$ haj --secret DB_PASS=vault://secret/data/db/password --env ./mig.env secrets --check
+ 実行時に渡るもの (値は解決していません):
+   --secret    DB_PASS               → vault://secret/data/db/password
+   --env       DB_HOST                 db.internal
+   --env       DB_USER               → vault://secret/data/db/user
 ```
 
 書式は発明していない — 1Password は `op inject`、Vault は vault-agent template の

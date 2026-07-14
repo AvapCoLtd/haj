@@ -115,7 +115,8 @@ haj --secret DB_PASS=vault://secret/data/db/password mig up
 # コマンド側は $DB_PASS を読むだけ。bao の存在を知らなくてよい
 ```
 
-- 値の置き場所は3層: `--secret`/`--env`/`--secretfile`(明示)、環境変数の走査(`HAJ_SECRETS=1`)、`.haj/env`(予定)
+- 渡し方は `--secret` / `--env` / `--secretfile`(いずれもコマンド名の前に書く)。
+  haj は環境を勝手に走査しない — **人が明示的に渡したものだけ**が展開される
 - 解決に失敗するとコマンドは**実行されない**(fail-fast)。未解決の参照文字列が渡ってくる心配はしなくてよい
 - 設定ファイルが要るツールには `--secretfile 出力=テンプレート.tpl` で描画して渡せる
 
