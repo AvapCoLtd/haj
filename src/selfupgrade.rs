@@ -42,9 +42,17 @@ impl Config {
                     "GitLabのトークンがありません。このリポジトリはprivateなので、\
                      リリースの取得に必要です。\n  \
                      環境変数 HAJ_TOKEN を渡すか、{where_to} に書いてください:\n    \
-                     token = glpat-xxxxxxxx"
+                     token = glpat-xxxxxxxx\n    \
+                     token = vault://users/<名前>/gitlab-pat/gitlab.avaper.day/token  (参照でもよい)"
                 )
             })?;
+
+        // token にはシークレット参照を書ける(SPEC §8.4)。平文 PAT をディスクに
+        // 置かずに済ませるため、使うこの瞬間に展開する。~/.config/haj/config は
+        // 本人しか書けないファイルなので、参照を書いたこと自体が同意 — ゲート不要。
+        let token = crate::secrets::expand(&token, false)
+            .map_err(|e| format!("token: {e}"))?
+            .unwrap_or(token);
 
         Ok(Config {
             gitlab: cfg.get("HAJ_GITLAB", "gitlab", DEFAULT_GITLAB).0,

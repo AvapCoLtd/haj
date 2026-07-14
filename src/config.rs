@@ -149,8 +149,15 @@ pub fn show() {
         );
     }
 
-    // トークンは値を出さない。設定されているかどうかと、どこから来たかだけ言う。
+    // トークンの実体は出さない。ただし**参照**なら参照をそのまま出す —
+    // 参照は秘密ではないし、どこの金庫を指しているかは調べたい情報(SPEC §8.4)。
     match cfg.get_opt("HAJ_TOKEN", "token") {
+        Some((v, src)) if crate::secrets::is_reference(&v) => println!(
+            "  {:width$}  {v}   ({})",
+            "token",
+            src.label(),
+            width = width
+        ),
         Some((_, src)) => println!(
             "  {:width$}  ********   ({})",
             "token",
