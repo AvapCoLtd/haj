@@ -1203,9 +1203,11 @@ fn completionのzsh版はevalしても補完関数を即実行しない() {
         s.contains("funcstack[1]"),
         "autoload と eval を見分けていない:\n{s}"
     );
-    // 無条件の即時呼び出しが残っていないこと
-    assert!(
-        !s.lines().any(|l| l.trim() == "_haj \"$@\""),
-        "無条件の即時呼び出しが残っている:\n{s}"
+    // 即時呼び出しはガードの中だけ(スクリプトの最後は fi で閉じている)
+    let last = s.lines().rfind(|l| !l.trim().is_empty()).unwrap();
+    assert_eq!(
+        last.trim(),
+        "fi",
+        "即時呼び出しがガードの外にある(末尾: {last})"
     );
 }
