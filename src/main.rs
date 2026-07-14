@@ -244,27 +244,59 @@ fn prepare_proc(path: &std::path::Path, args: &[String], deliveries: &[secrets::
     proc
 }
 
-/// `haj exec <プログラム> [引数...]`(SPEC §9.2)。
+/// `haj exec [--] <プログラム> [引数...]`(SPEC §9.2)。
 ///
 /// 探索を通さず、PATH のコマンド(`/` を含めばそのパス)に**シークレットの注入だけ
 /// して**実行する。op run / doppler run が占めている場所。
+/// 先頭の `--` は読み飛ばす(`op run --` / `kubectl exec --` の指癖と互換)。
 fn exec_external(args: &[String], deliveries: &[secrets::Delivery]) -> ! {
+    let args = strip_dashdash(args);
     let Some((prog, prog_args)) = args.split_first() else {
-        die("使い方: haj exec <プログラム> [引数...]");
+        die("使い方: haj exec [--] <プログラム> [引数...]");
     };
     exec_program(prog, prog_args.to_vec(), deliveries)
 }
 
 /// `haj sh '<コマンド>' [引数...]`(SPEC §9.2)— `haj exec sh -c` の省略形。
 /// 追加の引数はシェルの位置パラメータ($1...)として渡る。
+///
+/// `haj sh -- ls -la` のように `--` で始めたときは、以降の語を空白で繋いで
+/// 1行にする(ssh 方式)。引用が要る引数を含むなら1つの文字列で書くこと。
 fn exec_shell(args: &[String], deliveries: &[secrets::Delivery]) -> ! {
-    let Some((script, rest)) = args.split_first() else {
-        die("使い方: haj sh '<コマンド>' [引数...]");
+    const USAGE: &str = "使い方: haj sh '<コマンド>' [引数...] / haj sh -- <語...>";
+
+    let (script, rest): (String, &[String]) = if args.first().is_some_and(|a| a == "--") {
+        if args.len() < 2 {
+            die(USAGE);
+        }
+        (args[1..].join(" "), &[])
+    } else {
+        let Some((script, rest)) = args.split_first() else {
+            die(USAGE);
+        };
+        (script.clone(), rest)
     };
-    // sh -c <script> の直後の引数は $0。$1 から始めたいので埋める。
-    let mut argv = vec!["-c".to_string(), script.clone(), "haj".to_string()];
+
+    // 自前の `--` で sh のオプション解釈を終わらせる。これが無いと、スクリプトが
+    // `-` で始まるときに sh がオプションと誤解し、その次の語($0 用の "haj")を
+    // コマンド文字列として実行してしまう。
+    // sh -c <script> の直後の引数は $0。$1 から始めたいので "haj" を埋める。
+    let mut argv = vec![
+        "-c".to_string(),
+        "--".to_string(),
+        script,
+        "haj".to_string(),
+    ];
     argv.extend(rest.iter().cloned());
     exec_program("sh", argv, deliveries)
+}
+
+/// 先頭の `--` を1つだけ読み飛ばす。
+fn strip_dashdash(args: &[String]) -> &[String] {
+    match args.first() {
+        Some(a) if a == "--" => &args[1..],
+        _ => args,
+    }
 }
 
 fn exec_program(prog: &str, args: Vec<String>, deliveries: &[secrets::Delivery]) -> ! {

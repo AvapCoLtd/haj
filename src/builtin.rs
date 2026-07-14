@@ -135,9 +135,11 @@ haj は文字列をシェルに包まない。HAJ_ROOT / HAJ_NAME / HAJ_PROJECT 
 haj sh '<コマンド>' [引数...] — シェルの1行を、シークレットを注入して実行する。
 
 haj exec sh -c '<コマンド>' の省略形。追加の引数は位置パラメータ ($1...) になる。
+'--' で始めると、以降の語を空白で繋いで1行にする (ssh 方式)。
 
   haj --secret MYSQL_HOST=vault://avap/data/db/host sh 'mysql -h $MYSQL_HOST'
   haj sh 'echo $1-$2' one two    → one-two
+  haj sh -- ls -la               → ls -la
 
 展開の規則・HAJ_* を渡さないことは haj exec と同じ。詳細は SPEC.md §9.2。"
             .to_string(),

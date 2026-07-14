@@ -817,7 +817,6 @@ fn shの引数なしは使い方エラー() {
     assert_eq!(out.status.code(), Some(1));
     assert!(stderr(&out).contains("使い方"), "stderr: {}", stderr(&out));
 }
-
 // ---- 設定の token に参照を書ける(SPEC §8.4) ----
 
 #[test]
@@ -944,4 +943,49 @@ fn config_initは全ての鍵と既定値を雛形として出す() {
             "コメントでない行がある: {line}"
         );
     }
+}
+
+// ---- exec / sh の `--`(SPEC §9.2): 指癖との互換 ----
+
+#[test]
+fn execは先頭のダッシュダッシュを読み飛ばす() {
+    let sb = Sandbox::new("exec-dd");
+    let cp = sb.show_command();
+    sb.exe("extbin/dbtool", "#!/bin/sh\nprintf 'dd-ok\\n'\n");
+    let path = format!(
+        "{}:{}",
+        sb.dir.join("extbin").display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+
+    let out = sb.haj(&cp, &["exec", "--", "dbtool"], &[("PATH", &path)]);
+    assert!(out.status.success(), "stderr: {}", stderr(&out));
+    assert_eq!(stdout(&out).trim(), "dd-ok");
+}
+
+#[test]
+fn shのダッシュダッシュは語を繋いで1行にする() {
+    let sb = Sandbox::new("sh-dd");
+    let cp = sb.show_command();
+
+    // haj sh -- ls -la の形。語が空白で繋がれて1行のスクリプトになる
+    let out = sb.haj(&cp, &["sh", "--", "printf", "'%s'", "joined-ok"], &[]);
+    assert!(out.status.success(), "stderr: {}", stderr(&out));
+    assert_eq!(stdout(&out), "joined-ok");
+}
+
+#[test]
+fn shはスクリプトがダッシュで始まっても誤解釈しない() {
+    let sb = Sandbox::new("sh-dash");
+    let cp = sb.show_command();
+
+    // 以前は sh が「-」をオプションと解釈し、$0 用の "haj" をコマンドとして
+    // 実行してしまっていた(haj sh -- ls -la が haj のヘルプを出す珍事の原因)。
+    let out = sb.haj(&cp, &["sh", "-not-an-option"], &[]);
+    assert_eq!(out.status.code(), Some(127)); // シェルが「コマンドが無い」と言う
+    let s = stderr(&out);
+    assert!(
+        !s.contains("使い方: haj <コマンド>"),
+        "hajが再帰的に走った: {s}"
+    );
 }
