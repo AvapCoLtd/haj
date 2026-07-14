@@ -67,6 +67,31 @@ impl Config {
         (default.to_string(), Source::Default)
     }
 
+    /// エイリアス(SPEC §2.7)。`alias.<名前> = <語...>`。
+    /// **ユーザー設定だけ**から読む — リポジトリ側(.haj/project 等)に定義させると、
+    /// clone したリポジトリが `alias.mig = sh '...'` を仕込めてしまう。
+    pub fn alias(&self, name: &str) -> Option<String> {
+        self.map
+            .get(&format!("alias.{name}"))
+            .filter(|v| !v.is_empty())
+            .cloned()
+    }
+
+    /// 定義済みエイリアスの一覧(名前順)。予約語の名前は無視される側なので除く。
+    pub fn aliases(&self) -> Vec<(String, String)> {
+        let mut v: Vec<(String, String)> = self
+            .map
+            .iter()
+            .filter_map(|(k, val)| {
+                let name = k.strip_prefix("alias.")?;
+                (!name.is_empty() && !val.is_empty() && !crate::discovery::is_reserved(name))
+                    .then(|| (name.to_string(), val.clone()))
+            })
+            .collect();
+        v.sort();
+        v
+    }
+
     /// 既定値を持たない値(トークンなど)。無ければ None。
     pub fn get_opt(&self, env_key: &str, file_key: &str) -> Option<(String, Source)> {
         if let Ok(v) = std::env::var(env_key) {
@@ -191,6 +216,11 @@ pub fn template() {
         println!("# {desc} (環境変数: {env_key})");
         println!("# {file_key} = {default}");
     }
+    println!();
+    println!("# ------ alias: エイリアス (git 方式。SPEC §2.7) ------");
+    println!();
+    println!("# alias.<名前> = <語...>  名前が語の並びに展開され、残りの引数が続く");
+    println!("# alias.ie = -C ~/repos/example-app");
     println!();
     println!("# selfupgrade が使う GitLab トークン (環境変数: HAJ_TOKEN)。既定値なし。");
     println!("# 平文でも、シークレット参照でもよい (SPEC §8.4):");

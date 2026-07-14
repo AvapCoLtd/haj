@@ -28,49 +28,73 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 const USAGE_FLAGS: &str = "使い方: haj [-C <ディレクトリ>] [--secret <名前>=<値>]... [--env <ファイル>]... [--secretfile <出力>=<テンプレート>]... <コマンド> [引数...]";
 
 fn main() {
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    let mut args: Vec<String> = std::env::args().skip(1).collect();
 
-    // haj自身のグローバルフラグ(SPEC §3.2 / §10.7)。**サブコマンド名の前にだけ**書ける。
-    // 名前以降は解釈しない(§11)ので、フラグ以外に当たったらそこで止まる。
     let mut deliveries: Vec<secrets::Delivery> = Vec::new();
-    let mut idx = 0;
-    while idx < args.len() {
-        let flag = args[idx].as_str();
-        if !matches!(flag, "-C" | "--secret" | "--env" | "--secretfile") {
-            break;
-        }
-        let Some(arg) = args.get(idx + 1) else {
-            die(&format!("{flag} には値が要ります\n{USAGE_FLAGS}"));
-        };
-        if flag == "-C" {
-            // git と同じ。この場で移動するので、探索・プロジェクト境界・HAJ_PROJECT・
-            // サブコマンドの cwd がすべて移動先を起点になる。複数指定は順に適用され、
-            // 相対パスは直前の -C からの相対(git と同一の意味論)。
-            if let Err(e) = std::env::set_current_dir(arg) {
-                die(&format!("-C {arg}: 移動できません: {e}"));
-            }
-        } else {
-            match secrets::Delivery::parse(flag, arg) {
-                Ok(d) => deliveries.push(d),
-                Err(e) => die(&e),
-            }
-        }
-        idx += 2;
-    }
+    let mut alias_expanded = false;
 
-    let (name, rest) = match args[idx..].split_first() {
-        None => {
-            if !deliveries.is_empty() {
-                die(&format!(
-                    "フラグの後にコマンド名がありません\n{USAGE_FLAGS}"
-                ));
+    // グローバルフラグの解釈と、エイリアス展開(SPEC §2.7)。
+    // エイリアスは名前の位置で**1回だけ**語の並びに置き換わり(再帰しない)、
+    // 展開結果の先頭にフラグがあれば通常どおり解釈し直す。
+    let (name, rest): (String, Vec<String>) = loop {
+        // haj自身のグローバルフラグ(SPEC §3.2 / §10.7)。**サブコマンド名の前にだけ**
+        // 書ける。名前以降は解釈しない(§11)ので、フラグ以外に当たったらそこで止まる。
+        let mut idx = 0;
+        while idx < args.len() {
+            let flag = args[idx].as_str();
+            if !matches!(flag, "-C" | "--secret" | "--env" | "--secretfile") {
+                break;
             }
-            // 素の `haj` はヘルプ。何も分からない状態で来た人に一覧を見せるのが親切。
-            print_help(None);
-            std::process::exit(0);
+            let Some(arg) = args.get(idx + 1) else {
+                die(&format!("{flag} には値が要ります\n{USAGE_FLAGS}"));
+            };
+            if flag == "-C" {
+                // git と同じ。この場で移動するので、探索・プロジェクト境界・HAJ_PROJECT・
+                // サブコマンドの cwd がすべて移動先を起点になる。複数指定は順に適用され、
+                // 相対パスは直前の -C からの相対(git と同一の意味論)。
+                let dir = expand_home(arg);
+                if let Err(e) = std::env::set_current_dir(&dir) {
+                    die(&format!("-C {arg}: 移動できません: {e}"));
+                }
+            } else {
+                match secrets::Delivery::parse(flag, arg) {
+                    Ok(d) => deliveries.push(d),
+                    Err(e) => die(&e),
+                }
+            }
+            idx += 2;
         }
-        Some((n, r)) => (n.as_str(), r),
+
+        match args[idx..].split_first() {
+            None => {
+                if !deliveries.is_empty() {
+                    die(&format!(
+                        "フラグの後にコマンド名がありません\n{USAGE_FLAGS}"
+                    ));
+                }
+                // 素の `haj` はヘルプ。何も分からない状態で来た人に一覧を見せるのが親切。
+                print_help(None);
+                std::process::exit(0);
+            }
+            Some((n, r)) => {
+                // 優先順位は git と同じ: 予約語(組み込み) > エイリアス > 探索。
+                // 定義はユーザー設定だけから読む(config::Config::alias 参照)。
+                if !alias_expanded && !n.starts_with('-') && !discovery::is_reserved(n) {
+                    if let Some(exp) = config::Config::load().alias(n) {
+                        alias_expanded = true;
+                        let mut expanded: Vec<String> =
+                            exp.split_whitespace().map(str::to_string).collect();
+                        expanded.extend(r.iter().cloned());
+                        args = expanded;
+                        continue; // フラグから解釈し直す
+                    }
+                }
+                break (n.to_string(), r.to_vec());
+            }
+        }
     };
+    let name = name.as_str();
+    let rest: &[String] = &rest;
 
     // 受け渡しフラグは「本体を実行する」ときにだけ意味がある。
     // exec / sh 以外の組み込みに続けて書かれたら使い方の誤り(SPEC §10.7)。
@@ -193,6 +217,22 @@ fn main() {
         }
     }
     std::process::exit(126); // 「見つかったが実行できない」
+}
+
+/// 先頭の `~` を HOME に展開する。設定ファイル由来のエイリアス展開には
+/// シェルがいないので、コアがやらないと alias に `-C ~/...` が書けない。
+fn expand_home(path: &str) -> std::path::PathBuf {
+    if path == "~" {
+        if let Some(home) = std::env::var_os("HOME") {
+            return std::path::PathBuf::from(home);
+        }
+    }
+    if let Some(rest) = path.strip_prefix("~/") {
+        if let Some(home) = std::env::var_os("HOME") {
+            return std::path::PathBuf::from(home).join(rest);
+        }
+    }
+    std::path::PathBuf::from(path)
 }
 
 fn die(msg: &str) -> ! {
@@ -366,22 +406,34 @@ fn which(args: &[String]) -> ! {
         std::process::exit(1);
     };
 
+    // エイリアスなら展開を見せる(素性の可視化。エイリアスは探索より優先)
+    let alias = config::Config::load().alias(target);
+    if let Some(exp) = &alias {
+        if !all {
+            println!("alias.{target} = {exp}");
+            std::process::exit(0);
+        }
+        println!("* alias.{target} = {exp}");
+    }
+
     let cands = discovery::candidates(target);
-    if cands.is_empty() {
+    if cands.is_empty() && alias.is_none() {
         eprintln!("haj: 未知のコマンドです: {target}");
         std::process::exit(1);
     }
 
     if !all {
-        println!("{}", cands[0].path.display());
+        if let Some(c) = cands.first() {
+            println!("{}", c.path.display());
+        }
         std::process::exit(0);
     }
 
     for (i, c) in cands.iter().enumerate() {
-        let mark = if i == 0 { "*" } else { " " };
+        let mark = if i == 0 && alias.is_none() { "*" } else { " " };
         println!("{mark} {} {}", c.path.display(), c.origin.label());
     }
-    if cands.len() > 1 {
+    if cands.len() + usize::from(alias.is_some()) > 1 {
         println!("\n(* が実行されるもの。他は隠れている)");
     }
     std::process::exit(0);
@@ -470,6 +522,16 @@ fn print_help(topic: Option<&str>) {
         println!("   {:width$}  {}", b.name, b.describe, width = width);
     }
 
+    // エイリアス(SPEC §2.7)。呼べる名前である以上、一覧から漏らさない。
+    let aliases = config::Config::load().aliases();
+    if !aliases.is_empty() {
+        println!("\n エイリアス (~/.config/haj/config の alias.*):");
+        let awidth = aliases.iter().map(|(n, _)| n.len()).max().unwrap_or(0);
+        for (n, v) in &aliases {
+            println!("   {n:awidth$}  → haj {v}");
+        }
+    }
+
     // グローバルフラグ。コマンドと違って探索でも組み込み表でもないので、
     // ここに載せないとどこにも出ない(一覧が実態と一致する、という約束の一部)。
     println!("\n グローバルフラグ (コマンド名の前に書く):");
@@ -551,6 +613,13 @@ fn complete(args: &[String]) {
             builtin::ALL
                 .iter()
                 .map(|b| (b.name.to_string(), b.describe.to_string())),
+        );
+        // エイリアスも呼べる名前(SPEC §2.7)
+        rows.extend(
+            config::Config::load()
+                .aliases()
+                .into_iter()
+                .map(|(n, v)| (n, format!("エイリアス → haj {v}"))),
         );
         rows.sort();
         for (name, desc) in rows {
