@@ -33,6 +33,24 @@ chmod +x .haj/commands/greet
 モノレポのサブプロジェクトで親のコマンドも継承したいときだけ、`.haj/project` に
 `root = false` と書いて壁を開ける。
 
+### PATH の `haj-<名前>`(git 方式)
+
+`$PATH` 上に `haj-<名前>` という実行可能ファイルを置くと、ツリーに何も置かなくても
+`haj <名前>` で呼べる(git が `git-foo` を `git foo` にするのと同じ)。
+
+```sh
+printf '#!/bin/sh\necho hello from PATH\n' > ~/bin/haj-hello
+chmod +x ~/bin/haj-hello
+haj hello
+```
+
+- 探索の**最後**(表の4番)。ツリーの同名コマンドには常に負ける
+- **`HAJ_ROOT` は設定されない**(属するツリーが無い)。`$HAJ_ROOT/lib` に依存せず
+  自己完結で書くこと。`HAJ_PROJECT` は cwd から決まるので普通に渡る
+- 規約フック(`--haj-describe` 等)は同じように呼ばれる。実装すれば一覧にも補完にも出る
+- 使いどころ: cargo install や pipx など**言語のパッケージマネージャで配る**コマンド、
+  ツリー管理に乗せたくない個人ツール。チームで配るものはツリー(`$HAJ_COMMAND_PATH`)が正道
+
 ## 3. 規約フック(これを実装すると一級市民になる)
 
 コアは中身を知らない。知りたいこと(説明・使い方・補完)はコマンド自身に聞く。
