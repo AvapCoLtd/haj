@@ -579,6 +579,141 @@ fn 組み込みと同名のコマンドは置いても無視される() {
     );
 }
 
+// --- ユーザー設定 (~/.config/haj/) ---------------------------------------------
+//
+// 場所は XDG に従う。gitと同じ形 — リポジトリ側は .haj/(gitの .git/)、
+// ユーザー側は ~/.config/haj/(gitの ~/.config/git/config)。
+// 形式は .haj/project と同じ key = value(覚えることを1つに保つ)。
+
+#[test]
+fn 個人用コマンドはxdgの下から拾う() {
+    let sb = Sandbox::new("xdg-commands");
+    // $XDG_CONFIG_HOME/haj/commands
+    sb.command(
+        "xdgconf/haj",
+        "mine",
+        &conforming("個人用", "", "", "echo MINE"),
+    );
+
+    let cp = sb.path("none");
+    let out = Command::new(env!("CARGO_BIN_EXE_haj"))
+        .args(["__complete"])
+        .current_dir(&sb.dir)
+        .env("HAJ_COMMAND_PATH", cp.to_str().unwrap())
+        .env("HAJ_NO_CACHE", "1")
+        .env("HOME", &sb.dir)
+        .env("XDG_CONFIG_HOME", sb.path("xdgconf"))
+        .output()
+        .unwrap();
+
+    let s = stdout(&out);
+    assert!(
+        s.contains("mine"),
+        "~/.config/haj/commands が読まれていない:\n{s}"
+    );
+}
+
+#[test]
+fn 設定ファイルの値が既定値を上書きする() {
+    let sb = Sandbox::new("cfg-file");
+    sb.write(
+        "xdgconf/haj/config",
+        "hook_timeout_ms = 1234\ngitlab = https://example.test\n",
+    );
+
+    let out = Command::new(env!("CARGO_BIN_EXE_haj"))
+        .args(["config"])
+        .current_dir(&sb.dir)
+        .env("HAJ_NO_CACHE", "1")
+        .env("HOME", &sb.dir)
+        .env("XDG_CONFIG_HOME", sb.path("xdgconf"))
+        .env_remove("HAJ_HOOK_TIMEOUT_MS")
+        .env_remove("HAJ_GITLAB")
+        .output()
+        .unwrap();
+
+    let s = stdout(&out);
+    assert!(s.contains("1234"), "設定ファイルの値が効いていない:\n{s}");
+    assert!(s.contains("https://example.test"), "{s}");
+    assert!(s.contains("設定ファイル"), "出所が出ていない:\n{s}");
+}
+
+#[test]
+fn 環境変数は設定ファイルより強い() {
+    let sb = Sandbox::new("cfg-env");
+    sb.write("xdgconf/haj/config", "gitlab = https://from-file.test\n");
+
+    let out = Command::new(env!("CARGO_BIN_EXE_haj"))
+        .args(["config"])
+        .current_dir(&sb.dir)
+        .env("HAJ_NO_CACHE", "1")
+        .env("HOME", &sb.dir)
+        .env("XDG_CONFIG_HOME", sb.path("xdgconf"))
+        .env("HAJ_GITLAB", "https://from-env.test")
+        .output()
+        .unwrap();
+
+    let s = stdout(&out);
+    assert!(
+        s.contains("https://from-env.test"),
+        "環境変数が勝つべき:\n{s}"
+    );
+    assert!(
+        !s.contains("from-file"),
+        "設定ファイルの値が残っている:\n{s}"
+    );
+    assert!(s.contains("環境変数"), "出所が出ていない:\n{s}");
+}
+
+#[test]
+fn トークンの値は表示しない() {
+    let sb = Sandbox::new("cfg-token");
+    sb.write("xdgconf/haj/config", "token = glpat-SUPERSECRET\n");
+
+    let out = Command::new(env!("CARGO_BIN_EXE_haj"))
+        .args(["config"])
+        .current_dir(&sb.dir)
+        .env("HAJ_NO_CACHE", "1")
+        .env("HOME", &sb.dir)
+        .env("XDG_CONFIG_HOME", sb.path("xdgconf"))
+        .env_remove("HAJ_TOKEN")
+        .output()
+        .unwrap();
+
+    let s = stdout(&out);
+    assert!(
+        !s.contains("SUPERSECRET"),
+        "トークンの実体が表示されている(履歴やスクショに残る):\n{s}"
+    );
+    assert!(s.contains("********"), "設定済みであることは示すべき:\n{s}");
+    assert!(s.contains("設定ファイル"), "出所は示すべき:\n{s}");
+}
+
+#[test]
+fn 設定ファイルのコメントと引用符を扱える() {
+    let sb = Sandbox::new("cfg-parse");
+    sb.write(
+        "xdgconf/haj/config",
+        "# これはコメント\ngitlab = \"https://quoted.test\"   # 行末コメント\n\n",
+    );
+
+    let out = Command::new(env!("CARGO_BIN_EXE_haj"))
+        .args(["config"])
+        .current_dir(&sb.dir)
+        .env("HAJ_NO_CACHE", "1")
+        .env("HOME", &sb.dir)
+        .env("XDG_CONFIG_HOME", sb.path("xdgconf"))
+        .env_remove("HAJ_GITLAB")
+        .output()
+        .unwrap();
+
+    let s = stdout(&out);
+    assert!(
+        s.contains("https://quoted.test"),
+        "引数の引用符/コメントを剥がせていない:\n{s}"
+    );
+}
+
 #[test]
 fn 対象プロジェクトを環境変数で渡す() {
     let sb = Sandbox::new("projenv");

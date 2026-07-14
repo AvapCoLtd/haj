@@ -8,6 +8,7 @@
 
 mod builtin;
 mod cache;
+mod config;
 mod contract;
 mod discovery;
 mod project;
@@ -40,6 +41,10 @@ fn main() {
         }
         "-V" | "--version" => {
             println!("haj {VERSION}");
+            std::process::exit(0);
+        }
+        "config" => {
+            config::show();
             std::process::exit(0);
         }
         "selfupgrade" => selfupgrade::run(rest),

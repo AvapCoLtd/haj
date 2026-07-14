@@ -99,19 +99,17 @@ pub fn command_dirs() -> Vec<Dir> {
         }
     }
 
-    // 2. 個人用
-    if let Some(home) = &home {
-        let d = home.join(".haj").join("commands");
-        if d.is_dir() {
-            dirs.push(Dir {
-                path: d,
-                origin: Origin::User,
-            });
-        }
+    // 2. 個人用。XDG に従い ~/.config/haj/commands。
+    for d in user_command_dirs() {
+        dirs.push(Dir {
+            path: d,
+            origin: Origin::User,
+        });
     }
 
     // 3. システム共通
-    let system = env::var("HAJ_COMMAND_PATH").unwrap_or_else(|_| DEFAULT_COMMAND_PATH.to_string());
+    let cfg = crate::config::Config::load();
+    let (system, _) = cfg.get("HAJ_COMMAND_PATH", "command_path", DEFAULT_COMMAND_PATH);
     for part in system.split(':').filter(|s| !s.is_empty()) {
         let d = PathBuf::from(part);
         if d.is_dir() {
@@ -122,6 +120,27 @@ pub fn command_dirs() -> Vec<Dir> {
         }
     }
 
+    dirs
+}
+
+/// 個人用コマンドの置き場所。
+///
+/// 正は `$XDG_CONFIG_HOME/haj/commands`(既定 `~/.config/haj/commands`)。
+/// 0.3.0 までは `~/.haj/commands` だったので、そちらも当面は読む
+/// (置いてあるコマンドが黙って消えるのが一番たちが悪い)。
+fn user_command_dirs() -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    if let Some(d) = crate::config::config_dir().map(|c| c.join("commands")) {
+        if d.is_dir() {
+            dirs.push(d);
+        }
+    }
+    if let Some(home) = home_dir() {
+        let legacy = home.join(".haj").join("commands");
+        if legacy.is_dir() {
+            dirs.push(legacy);
+        }
+    }
     dirs
 }
 
@@ -263,7 +282,7 @@ pub fn is_valid_name(name: &str) -> bool {
 pub fn is_reserved(name: &str) -> bool {
     matches!(
         name,
-        "help" | "commands" | "which" | "selfupgrade" | "__complete"
+        "help" | "commands" | "which" | "config" | "selfupgrade" | "__complete"
     )
 }
 

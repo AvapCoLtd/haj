@@ -28,11 +28,12 @@ Python でも `haj` から等しく扱われる。逆に、コアはこの契約
 | 順 | 探索先 | 用途 |
 |---|---|---|
 | 1 | カレントから上へ辿った各階層の `<dir>/.haj/commands/<名前>` | プロジェクト固有 |
-| 2 | `~/.haj/commands/<名前>` | 個人用 |
+| 2 | `~/.config/haj/commands/<名前>` | 個人用(XDG。§8.1) |
 | 3 | `$HAJ_COMMAND_PATH` の各ディレクトリ(`:` 区切り) | 全社/イメージ共通 |
 | 4 | `$PATH` 上の `haj-<名前>` | git 方式の逃げ道 |
 
-`$HAJ_COMMAND_PATH` の既定値は `/usr/local/lib/haj/commands`。
+`$HAJ_COMMAND_PATH` の既定値は `/usr/local/lib/haj/commands`(設定ファイルの
+`command_path` でも指定できる。§8)。
 
 ### 2.1 プロジェクト境界(`.haj` は壁である)
 
@@ -124,7 +125,7 @@ root = true
 - 空文字列
 - `.` または `-` で始まるもの
 - `/` を含むもの
-- **予約語**: `help`, `commands`, `which`, `selfupgrade`, `secrets`, `__complete`
+- **予約語**: `help`, `commands`, `which`, `config`, `selfupgrade`, `secrets`, `__complete`
 
 予約語を弾くのは、`.haj/commands/help` を置かれるとコアのヘルプが奪われ、
 「コマンド一覧を出す手段が無くなる」状態に陥りうるため。
@@ -318,14 +319,64 @@ haj __complete <名前> [語...]       → そのコマンドの --haj-complete 
 
 ---
 
-## 8. 環境変数(コアが読むもの)
+## 8. 設定
 
-| 変数 | 既定 | 意味 |
-|---|---|---|
-| `HAJ_COMMAND_PATH` | `/usr/local/lib/haj/commands` | システム共通のコマンド置き場(`:` 区切り) |
-| `HAJ_HOOK_TIMEOUT_MS` | `2000` | 規約フックのタイムアウト |
-| `HAJ_NO_CACHE` | (未設定) | `1` で説明文キャッシュを無効化 |
-| `XDG_CACHE_HOME` | `$HOME/.cache` | キャッシュの置き場所 |
+### 8.1 場所(XDG に従う)
+
+**git と同じ形**。リポジトリ側は `.haj/`(git の `.git/`)、ユーザー側は
+`~/.config/haj/`(git の `~/.config/git/config`)。
+
+| 何 | 場所 |
+|---|---|
+| ユーザー設定 | `$XDG_CONFIG_HOME/haj/config`(既定 `~/.config/haj/config`) |
+| 個人用コマンド | `$XDG_CONFIG_HOME/haj/commands/` |
+| 説明文キャッシュ | `$XDG_CACHE_HOME/haj/describe.tsv`(既定 `~/.cache/haj/`) |
+| プロジェクト設定 | `<リポジトリ>/.haj/project` |
+
+0.3.0 までの `~/.haj/commands/` も当面は読む(置いてあるコマンドが黙って消えるのが
+一番たちが悪い)。新規は `~/.config/haj/commands/` に置く。
+
+### 8.2 形式
+
+**`.haj/project` と同じ `key = value`。** `#` から行末はコメント。
+
+設定ファイルの形式が2つあると「どっちがどっちだったか」を覚える羽目になる。
+入れ子が要るような項目は無く、信頼済みツリーの一覧のような**列**は direnv 方式で
+別ファイルにすればよい。これで依存クレートをゼロに保てる(YAML/TOML はパーサが要る)。
+
+```
+# ~/.config/haj/config
+gitlab     = https://gitlab.avaper.day
+project_id = 788
+target     = x86_64-unknown-linux-musl
+token      = glpat-xxxxxxxx
+
+hook_timeout_ms = 2000
+```
+
+### 8.3 優先順位
+
+**環境変数 > 設定ファイル > 既定値。**
+
+この3段が見えないと「なぜ効かないのか」を調べる手段が無くなるので、
+**`haj config` は実効値と一緒に必ず出所を出す**(`haj which` が探索順を見せるのと
+同じ理由)。`token` は値を出さず、設定されているかと出所だけを示す。
+
+| 設定ファイルの鍵 | 環境変数 | 既定 | 意味 |
+|---|---|---|---|
+| `command_path` | `HAJ_COMMAND_PATH` | `/usr/local/lib/haj/commands` | システム共通のコマンド置き場(`:` 区切り) |
+| `hook_timeout_ms` | `HAJ_HOOK_TIMEOUT_MS` | `2000` | 規約フックのタイムアウト |
+| `token` | `HAJ_TOKEN` | (無し) | `selfupgrade` が使う GitLab トークン |
+| `gitlab` | `HAJ_GITLAB` | `https://gitlab.avaper.day` | GitLab インスタンス |
+| `project_id` | `HAJ_PROJECT_ID` | `788` | haj のプロジェクト ID |
+| `target` | `HAJ_TARGET` | `x86_64-unknown-linux-musl` | 取得するビルドのターゲット |
+
+環境変数だけのもの(設定ファイルに書けない):
+
+| 変数 | 意味 |
+|---|---|
+| `HAJ_NO_CACHE` | `1` で説明文キャッシュを無効化(デバッグ用) |
+| `XDG_CONFIG_HOME` / `XDG_CACHE_HOME` | 置き場所そのものを決めるので、設定ファイルには書けない |
 | `HAJ_SECRETS` | (未設定) | `1` でシークレット参照の展開を有効化(§10) |
 | `HAJ_OP_CMD` | `op` | op 参照の解決に使う CLI |
 | `HAJ_VAULT_CMD` | `vault` | vault 参照の解決に使う CLI(avap は `bao` に差し替える) |
@@ -340,6 +391,7 @@ haj __complete <名前> [語...]       → そのコマンドの --haj-complete 
 | `haj help <名前>` | そのコマンドの `--haj-help` |
 | `haj commands` | `名前\tパス\t出自\t説明` を機械可読で列挙 |
 | `haj which [--all] <名前>` | 探索で勝っている実行ファイルのパス(`--all` で隠れているものも) |
+| `haj config` | 設定の実効値と、その出所(§8) |
 | `haj selfupgrade` | コア自身の更新(§9.1) |
 | `haj secrets` | シークレット参照の展開対象を確認する(§10.6) |
 | `haj --version` | コアの版 |

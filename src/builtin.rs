@@ -31,6 +31,10 @@ pub const ALL: &[Builtin] = &[
         describe: "どの定義が効いているかを見る (--all で隠れているものも)",
     },
     Builtin {
+        name: "config",
+        describe: "設定の実効値と、その出所を見る",
+    },
+    Builtin {
         name: "selfupgrade",
         describe: "haj自身を更新する",
     },
@@ -71,6 +75,28 @@ haj which [--all] <名前> — どの定義が効いているのかを見る。
 どちらが走るのかを確かめるためにある。setup や reset は破壊的なので、
 迷ったら実行する前にこれで確認すること。"
             .to_string(),
+
+        "config" => format!(
+            "\
+haj config — 設定の実効値と、その出所を見る。
+
+  ~/.config/haj/config  (XDG。$XDG_CONFIG_HOME を見る)
+
+形式は key = value。'#' から行末はコメント。.haj/project と同じ形式なので、
+覚えることは1つで済む。
+
+  gitlab     = https://gitlab.avaper.day
+  project_id = 788
+  target     = {target}
+  token      = glpat-xxxxxxxx
+
+値は 環境変数 > 設定ファイル > 既定値 の順で決まる。この3段が見えないと
+「なぜ効かないのか」を調べる手段が無くなるので、haj config は必ず出所を言う
+(haj which が探索順を見せるのと同じ理由)。
+
+token は値を出さない。設定されているかと、どこから来たかだけを出す。",
+            target = crate::selfupgrade::DEFAULT_TARGET
+        ),
 
         "selfupgrade" => selfupgrade::long_help(),
 
