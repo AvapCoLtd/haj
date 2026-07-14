@@ -8,6 +8,7 @@
 
 mod builtin;
 mod cache;
+mod completion;
 mod config;
 mod contract;
 mod discovery;
@@ -133,6 +134,8 @@ fn main() {
         "selfupgrade" => selfupgrade::run(rest),
         // 端末で読めるドキュメント。SPEC.md §9.3。
         "docs" => docs::run(rest),
+        // 補完スクリプトを吐く。eval "$(haj completion zsh)" で使う。SPEC.md §9.4。
+        "completion" => completion::run(rest),
         // 何が展開されるのかを、金庫に触らずに確かめる。SPEC.md §10.6。
         "secrets" => secrets::dry_run(),
         // 機械向け。シェル補完から呼ばれる。SPEC.md「補完プロトコル」参照。

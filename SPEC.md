@@ -125,7 +125,7 @@ root = true
 - 空文字列
 - `.` または `-` で始まるもの
 - `/` を含むもの
-- **予約語**: `help`, `commands`, `which`, `config`, `docs`, `exec`, `sh`, `selfupgrade`, `secrets`, `__complete`
+- **予約語**: `help`, `commands`, `which`, `config`, `completion`, `docs`, `exec`, `sh`, `selfupgrade`, `secrets`, `__complete`
 
 予約語を弾くのは、`.haj/commands/help` を置かれるとコアのヘルプが奪われ、
 「コマンド一覧を出す手段が無くなる」状態に陥りうるため。`exec` / `sh` はさらに強い理由で
@@ -482,6 +482,7 @@ selfupgrade.token = vault://secret/data/haj/token
 | `haj exec [--] <プログラム> [引数...]` | PATH のコマンドにシークレットを注入して実行(§9.2) |
 | `haj sh '<コマンド>' [引数...]` | `exec sh -c` の省略形(§9.2) |
 | `haj docs [<トピック>]` | 端末で読めるドキュメント(§9.3) |
+| `haj completion <シェル>` | 補完スクリプトを出す(§9.4) |
 | `haj --version` | コアの版 |
 | `haj __complete ...` | 補完プロトコル(人間向けではない) |
 
@@ -507,6 +508,7 @@ selfupgrade.token = vault://secret/data/haj/token
    exec         PATHのコマンドにシークレットを注入して実行する
    sh           シェルの1行をシークレットを注入して実行する (exec sh -c の省略形)
    docs         ドキュメントを読む (コマンドの作り方・仕様・ツリーの文書)
+   completion   シェル補完のスクリプトを出す
 ```
 
 `haj commands` では出自ラベル `[haj]`、パスの代わりに `(組み込み)` を出す。
@@ -625,6 +627,22 @@ haj docs spec                # この仕様の全文(haj同梱)
   (コマンドの予約語と違い、奪われても実害が無い。埋め込みは最後のフォールバック)
 - 出力は素の markdown を stdout へ。ページャは使う側のパイプに任せる:
   `haj docs spec | less`
+
+### 9.4 `haj completion`
+
+補完スクリプトを標準出力に出す。**補完はファイルとして配らない** — バイナリ1本で
+完結する(gh / kubectl / rustup と同じ流儀)。
+
+```sh
+# ~/.zshrc
+eval "$(haj completion zsh)"
+
+# ~/.bashrc
+eval "$(haj completion bash)"
+```
+
+スクリプト自体は候補を持たない(§6)。`haj __complete` に聞くだけなので、コマンドを
+足しても補完は自動で追従する — プロジェクト固有のコマンドもそのまま候補に出る。
 
 ---
 

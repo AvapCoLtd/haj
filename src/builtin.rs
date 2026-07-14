@@ -51,6 +51,10 @@ pub const ALL: &[Builtin] = &[
         describe: "ドキュメントを読む (コマンドの作り方・仕様・ツリーの文書)",
     },
     Builtin {
+        name: "completion",
+        describe: "シェル補完のスクリプトを出す (eval \"$(haj completion zsh)\")",
+    },
+    Builtin {
         name: "sh",
         describe: "シェルの1行をシークレットを注入して実行する (exec sh -c の省略形)",
     },
@@ -160,6 +164,20 @@ haj docs [<トピック>] — 端末で読めるドキュメント。
 出力は素の markdown。長いものはページャへ: haj docs spec | less"
             .to_string(),
 
+        "completion" => format!(
+            "\
+haj completion <シェル> — シェル補完のスクリプトを標準出力に出す。
+
+  # ~/.zshrc  (bash なら ~/.bashrc に bash 版を)
+  eval \"$(haj completion zsh)\"
+
+対応シェル: {}
+
+候補はスクリプトが持たない。コアの haj __complete に聞くだけなので、コマンドを
+足しても補完は自動で追従する (プロジェクト固有のコマンドもそのまま出る)。",
+            crate::completion::SHELLS.join(" / ")
+        ),
+
         "selfupgrade" => selfupgrade::long_help(),
 
         "secrets" => "\
@@ -227,6 +245,7 @@ pub fn complete(name: &str, words: &[String]) -> Vec<String> {
             }
         }
         "docs" => crate::docs::complete(words),
+        "completion" => crate::completion::complete(words),
         _ => Vec::new(),
     }
 }
