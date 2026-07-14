@@ -87,7 +87,13 @@ fn main() {
             std::process::exit(0);
         }
         "config" => {
-            config::show();
+            // --init は設定ファイルの雛形を標準出力へ(全行コメント)。
+            // そのままリダイレクトすれば初期化になる。SPEC §8.2。
+            if rest.first().map(String::as_str) == Some("--init") {
+                config::template();
+            } else {
+                config::show();
+            }
             std::process::exit(0);
         }
         "selfupgrade" => selfupgrade::run(rest),

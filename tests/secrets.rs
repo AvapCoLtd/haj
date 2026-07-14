@@ -817,3 +817,131 @@ fn shの引数なしは使い方エラー() {
     assert_eq!(out.status.code(), Some(1));
     assert!(stderr(&out).contains("使い方"), "stderr: {}", stderr(&out));
 }
+
+// ---- 設定の token に参照を書ける(SPEC §8.4) ----
+
+#[test]
+fn 設定のtokenの参照はselfupgradeが使うときに展開される() {
+    let sb = Sandbox::new("token-ref");
+    let cp = sb.show_command();
+    let vault = sb.fake_vault();
+
+    // 偽 curl: 受けた引数を記録し、最新リリースとして現行版を返す
+    sb.exe(
+        "extbin/curl",
+        &format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"{}\"\nprintf '{{\"tag_name\":\"v{}\"}}'\n",
+            sb.dir.join("curl-args").display(),
+            env!("CARGO_PKG_VERSION")
+        ),
+    );
+    let path = format!(
+        "{}:{}",
+        sb.dir.join("extbin").display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+
+    let confdir = sb.dir.join(".config/haj");
+    fs::create_dir_all(&confdir).unwrap();
+    fs::write(
+        confdir.join("config"),
+        "token = vault://users/hajime/gitlab-pat/gitlab.avaper.day/token\n",
+    )
+    .unwrap();
+
+    let out = sb.haj(
+        &cp,
+        &["selfupgrade", "--check"],
+        &[
+            ("HAJ_VAULT_CMD", vault.to_str().unwrap()),
+            ("PATH", &path),
+            ("HAJ_TOKEN", ""), // 空は未設定扱い → 設定ファイルの参照が効く
+        ],
+    );
+    assert_eq!(out.status.code(), Some(0), "stderr: {}", stderr(&out)); // 最新
+    let args = fs::read_to_string(sb.dir.join("curl-args")).unwrap();
+    assert!(
+        args.contains("PRIVATE-TOKEN: s3cr3t"),
+        "展開されたトークンで認証していない:\n{args}"
+    );
+}
+
+#[test]
+fn configはtokenの参照をそのまま出す() {
+    let sb = Sandbox::new("token-show");
+    let cp = sb.show_command();
+
+    let confdir = sb.dir.join(".config/haj");
+    fs::create_dir_all(&confdir).unwrap();
+    fs::write(
+        confdir.join("config"),
+        "token = vault://users/hajime/gitlab-pat/gitlab.avaper.day/token\n",
+    )
+    .unwrap();
+
+    let out = sb.haj(&cp, &["config"], &[("HAJ_TOKEN", "")]);
+    assert!(out.status.success(), "stderr: {}", stderr(&out));
+    let s = stdout(&out);
+    assert!(
+        s.contains("vault://users/hajime/gitlab-pat/gitlab.avaper.day/token"),
+        "参照が表示されていない:\n{s}"
+    );
+    assert!(!s.contains("********"), "参照なのにマスクされた:\n{s}");
+}
+
+#[test]
+fn 平文のtokenは従来どおりマスクされる() {
+    let sb = Sandbox::new("token-mask");
+    let cp = sb.show_command();
+
+    let out = sb.haj(&cp, &["config"], &[("HAJ_TOKEN", "glpat-plainvalue")]);
+    assert!(out.status.success());
+    let s = stdout(&out);
+    assert!(s.contains("********"), "平文がマスクされていない:\n{s}");
+    assert!(!s.contains("glpat-plainvalue"), "平文が漏れた:\n{s}");
+}
+
+// ---- haj config --init(SPEC §8.2): 設定の雛形 ----
+
+#[test]
+fn config_initは全ての鍵と既定値を雛形として出す() {
+    let sb = Sandbox::new("config-init");
+    let cp = sb.show_command();
+
+    let out = sb.haj(&cp, &["config", "--init"], &[]);
+    assert!(out.status.success(), "stderr: {}", stderr(&out));
+    let s = stdout(&out);
+
+    // 全ての鍵が出ている
+    for key in [
+        "command_path",
+        "hook_timeout_ms",
+        "op_cmd",
+        "vault_cmd",
+        "vault_addr",
+        "vault_login",
+        "gitlab",
+        "project_id",
+        "target",
+        "token",
+    ] {
+        assert!(
+            s.contains(&format!("# {key} ")) || s.contains(&format!("# {key} =")),
+            "{key} が雛形に無い:\n{s}"
+        );
+    }
+    // 既定値も出ている
+    assert!(s.contains("https://vault.avap.plus"), "既定値が無い:\n{s}");
+    assert!(
+        s.contains("-method=oidc -path=id-avap-keycloak"),
+        "既定値が無い:\n{s}"
+    );
+
+    // 全行コメントか空行 = そのまま置いても挙動が変わらない
+    for line in s.lines() {
+        assert!(
+            line.is_empty() || line.starts_with('#'),
+            "コメントでない行がある: {line}"
+        );
+    }
+}

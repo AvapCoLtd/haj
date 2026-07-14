@@ -32,7 +32,7 @@ pub const ALL: &[Builtin] = &[
     },
     Builtin {
         name: "config",
-        describe: "設定の実効値と、その出所を見る",
+        describe: "設定の実効値と出所を見る (--init で雛形を出す)",
     },
     Builtin {
         name: "selfupgrade",
@@ -91,6 +91,13 @@ haj which [--all] <名前> — どの定義が効いているのかを見る。
         "config" => format!(
             "\
 haj config — 設定の実効値と、その出所を見る。
+
+  haj config           実効値と出所の一覧
+  haj config --init    設定できる鍵と既定値をすべて、雛形として出す(全行コメント)
+
+雛形はそのままリダイレクトすれば初期化になる:
+
+  haj config --init > ~/.config/haj/config
 
   ~/.config/haj/config  (XDG。$XDG_CONFIG_HOME を見る)
 
@@ -190,6 +197,13 @@ pub fn complete(name: &str, words: &[String]) -> Vec<String> {
         "selfupgrade" => {
             if words.is_empty() {
                 vec!["--check".to_string()]
+            } else {
+                Vec::new()
+            }
+        }
+        "config" => {
+            if words.is_empty() {
+                vec!["--init".to_string()]
             } else {
                 Vec::new()
             }

@@ -355,6 +355,13 @@ token      = glpat-xxxxxxxx
 hook_timeout_ms = 2000
 ```
 
+設定できる鍵と既定値は `haj config --init` が**すべて**雛形として出す(全行コメント
+なので、そのまま置いても挙動は変わらない。変えたい行だけコメントを外す):
+
+```sh
+haj config --init > ~/.config/haj/config
+```
+
 ### 8.3 優先順位
 
 **環境変数 > 設定ファイル > 既定値。**
@@ -371,7 +378,7 @@ hook_timeout_ms = 2000
 | `vault_cmd` | `HAJ_VAULT_CMD` | `bao` | vault 参照の解決に使う CLI(§10) |
 | `vault_addr` | `VAULT_ADDR` | `https://vault.avap.plus` | vault サーバ。環境の `VAULT_ADDR` / `BAO_ADDR` が優先(§10.4) |
 | `vault_login` | `HAJ_VAULT_LOGIN` | `-method=oidc -path=id-avap-keycloak` | 未ログイン時に自動実行する `login` の引数(§10.4)。`off` で無効化 |
-| `token` | `HAJ_TOKEN` | (無し) | `selfupgrade` が使う GitLab トークン |
+| `token` | `HAJ_TOKEN` | (無し) | `selfupgrade` が使う GitLab トークン。**シークレット参照を書ける**(§8.4) |
 | `gitlab` | `HAJ_GITLAB` | `https://gitlab.avaper.day` | GitLab インスタンス |
 | `project_id` | `HAJ_PROJECT_ID` | `788` | haj のプロジェクト ID |
 | `target` | `HAJ_TARGET` | `x86_64-unknown-linux-musl` | 取得するビルドのターゲット |
@@ -384,6 +391,25 @@ hook_timeout_ms = 2000
 | `XDG_CONFIG_HOME` / `XDG_CACHE_HOME` | 置き場所そのものを決めるので、設定ファイルには書けない |
 | `HAJ_SECRETS` | `1` でシークレット参照の展開を有効化(§10)。金庫を開ける鍵を設定ファイルに常設させない |
 
+### 8.4 `token` にはシークレット参照を書ける
+
+```
+# ~/.config/haj/config
+token = vault://users/hajime/gitlab-pat/gitlab.avaper.day/token
+```
+
+平文の PAT をディスクに置かずに、素の `haj selfupgrade` が動く。
+
+- 展開は **token を使うとき**(selfupgrade の認証時)に行う。読むだけの `haj config` では
+  解決しない(参照は参照のまま表示する。参照は秘密ではない)
+- 判定は値全体規則(§10.3)。参照でなければ従来どおり平文として使う。`HAJ_TOKEN`
+  環境変数に参照が入っている場合も同様に展開する
+- **ゲートは不要**(`HAJ_SECRETS` も不要)。`~/.config/haj/config` は本人にしか書けない
+  ファイルであり、参照を書いたこと自体が同意(`--secret` フラグと同じ層)
+- 解決に失敗したら selfupgrade を進めない(fail-fast)
+- 展開されるのは `token` **だけ**。`op_cmd` / `vault_cmd` / `vault_addr` / `vault_login`
+  などリゾルバ自身の設定は展開しない(参照の解決に参照が要る、という再帰を作らない)
+
 ---
 
 ## 9. コア組み込みのコマンド
@@ -394,7 +420,7 @@ hook_timeout_ms = 2000
 | `haj help <名前>` | そのコマンドの `--haj-help` |
 | `haj commands` | `名前\tパス\t出自\t説明` を機械可読で列挙 |
 | `haj which [--all] <名前>` | 探索で勝っている実行ファイルのパス(`--all` で隠れているものも) |
-| `haj config` | 設定の実効値と、その出所(§8) |
+| `haj config [--init]` | 設定の実効値と出所。`--init` は雛形を出す(§8) |
 | `haj selfupgrade` | コア自身の更新(§9.1) |
 | `haj secrets` | シークレット参照の展開対象を確認する(§10.6) |
 | `haj exec <プログラム> [引数...]` | PATH のコマンドにシークレットを注入して実行(§9.2) |
