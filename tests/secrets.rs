@@ -900,3 +900,48 @@ fn 平文のtokenは従来どおりマスクされる() {
     assert!(s.contains("********"), "平文がマスクされていない:\n{s}");
     assert!(!s.contains("glpat-plainvalue"), "平文が漏れた:\n{s}");
 }
+
+// ---- haj config --init(SPEC §8.2): 設定の雛形 ----
+
+#[test]
+fn config_initは全ての鍵と既定値を雛形として出す() {
+    let sb = Sandbox::new("config-init");
+    let cp = sb.show_command();
+
+    let out = sb.haj(&cp, &["config", "--init"], &[]);
+    assert!(out.status.success(), "stderr: {}", stderr(&out));
+    let s = stdout(&out);
+
+    // 全ての鍵が出ている
+    for key in [
+        "command_path",
+        "hook_timeout_ms",
+        "op_cmd",
+        "vault_cmd",
+        "vault_addr",
+        "vault_login",
+        "gitlab",
+        "project_id",
+        "target",
+        "token",
+    ] {
+        assert!(
+            s.contains(&format!("# {key} ")) || s.contains(&format!("# {key} =")),
+            "{key} が雛形に無い:\n{s}"
+        );
+    }
+    // 既定値も出ている
+    assert!(s.contains("https://vault.avap.plus"), "既定値が無い:\n{s}");
+    assert!(
+        s.contains("-method=oidc -path=id-avap-keycloak"),
+        "既定値が無い:\n{s}"
+    );
+
+    // 全行コメントか空行 = そのまま置いても挙動が変わらない
+    for line in s.lines() {
+        assert!(
+            line.is_empty() || line.starts_with('#'),
+            "コメントでない行がある: {line}"
+        );
+    }
+}

@@ -355,6 +355,13 @@ token      = glpat-xxxxxxxx
 hook_timeout_ms = 2000
 ```
 
+設定できる鍵と既定値は `haj config --init` が**すべて**雛形として出す(全行コメント
+なので、そのまま置いても挙動は変わらない。変えたい行だけコメントを外す):
+
+```sh
+haj config --init > ~/.config/haj/config
+```
+
 ### 8.3 優先順位
 
 **環境変数 > 設定ファイル > 既定値。**
@@ -413,7 +420,7 @@ token = vault://users/hajime/gitlab-pat/gitlab.avaper.day/token
 | `haj help <名前>` | そのコマンドの `--haj-help` |
 | `haj commands` | `名前\tパス\t出自\t説明` を機械可読で列挙 |
 | `haj which [--all] <名前>` | 探索で勝っている実行ファイルのパス(`--all` で隠れているものも) |
-| `haj config` | 設定の実効値と、その出所(§8) |
+| `haj config [--init]` | 設定の実効値と出所。`--init` は雛形を出す(§8) |
 | `haj selfupgrade` | コア自身の更新(§9.1) |
 | `haj secrets` | シークレット参照の展開対象を確認する(§10.6) |
 | `haj exec <プログラム> [引数...]` | PATH のコマンドにシークレットを注入して実行(§9.2) |

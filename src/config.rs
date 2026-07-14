@@ -90,34 +90,83 @@ pub fn config_dir() -> Option<PathBuf> {
         .map(|base| base.join("haj"))
 }
 
-/// コアが読む設定の一覧。`haj config` はこれを回して、**実効値と出所**を出す。
+/// コアが読む設定の一覧。`haj config` はこれを回して**実効値と出所**を出し、
+/// `haj config --init` は**雛形**を出す。
 ///
 /// 環境変数 > 設定ファイル > 既定値、の3段が見えないと「なぜ効かないのか」を
 /// 調べる手段が無くなる。`haj which` が探索順を見せるのと同じ理由でこれがある。
-pub const KEYS: &[(&str, &str, &str)] = &[
-    // (環境変数, 設定ファイルの鍵, 既定値)
+pub const KEYS: &[(&str, &str, &str, &str)] = &[
+    // (環境変数, 設定ファイルの鍵, 既定値, 説明)
     (
         "HAJ_COMMAND_PATH",
         "command_path",
         "/usr/local/lib/haj/commands",
+        "システム共通のコマンド置き場 (':' 区切り)",
     ),
-    ("HAJ_HOOK_TIMEOUT_MS", "hook_timeout_ms", "2000"),
-    ("HAJ_OP_CMD", "op_cmd", "op"),
-    ("HAJ_VAULT_CMD", "vault_cmd", "bao"),
+    (
+        "HAJ_HOOK_TIMEOUT_MS",
+        "hook_timeout_ms",
+        "2000",
+        "規約フック (--haj-describe 等) のタイムアウト (ミリ秒)",
+    ),
+    ("HAJ_OP_CMD", "op_cmd", "op", "op 参照の解決に使う CLI"),
+    (
+        "HAJ_VAULT_CMD",
+        "vault_cmd",
+        "bao",
+        "vault 参照の解決に使う CLI",
+    ),
     (
         "VAULT_ADDR",
         "vault_addr",
         crate::secrets::DEFAULT_VAULT_ADDR,
+        "vault サーバ (環境の VAULT_ADDR / BAO_ADDR が優先)",
     ),
     (
         "HAJ_VAULT_LOGIN",
         "vault_login",
         crate::secrets::DEFAULT_VAULT_LOGIN,
+        "未ログイン時に自動実行する login の引数。off で無効化",
     ),
-    ("HAJ_GITLAB", "gitlab", "https://gitlab.avaper.day"),
-    ("HAJ_PROJECT_ID", "project_id", "788"),
-    ("HAJ_TARGET", "target", "x86_64-unknown-linux-musl"),
+    (
+        "HAJ_GITLAB",
+        "gitlab",
+        "https://gitlab.avaper.day",
+        "haj 自身の取得元 GitLab (selfupgrade)",
+    ),
+    (
+        "HAJ_PROJECT_ID",
+        "project_id",
+        "788",
+        "haj のプロジェクト ID",
+    ),
+    (
+        "HAJ_TARGET",
+        "target",
+        "x86_64-unknown-linux-musl",
+        "取得するビルドのターゲット",
+    ),
 ];
+
+/// `haj config --init` — 設定できる鍵と既定値をすべて、設定ファイルの雛形として出す。
+///
+/// 全行コメントなので、そのまま置いても挙動は変わらない。変えたい行だけ
+/// コメントを外す:  haj config --init > ~/.config/haj/config
+pub fn template() {
+    println!("# haj の設定");
+    println!("# 形式: key = value。'#' から行末はコメント。すべて省略可 (既定値で動く)。");
+    println!("# 優先順位: 環境変数 > 設定ファイル > 既定値。実効値は `haj config` で確認。");
+    for (env_key, file_key, default, desc) in KEYS {
+        println!();
+        println!("# {desc} (環境変数: {env_key})");
+        println!("# {file_key} = {default}");
+    }
+    println!();
+    println!("# selfupgrade が使う GitLab トークン (環境変数: HAJ_TOKEN)。既定値なし。");
+    println!("# 平文でも、シークレット参照でもよい (SPEC §8.4):");
+    println!("# token = glpat-xxxxxxxx");
+    println!("# token = vault://users/<名前>/gitlab-pat/gitlab.avaper.day/token");
+}
 
 /// `haj config` の出力。
 ///
@@ -135,12 +184,12 @@ pub fn show() {
 
     let width = KEYS
         .iter()
-        .map(|(_, k, _)| k.len())
+        .map(|(_, k, _, _)| k.len())
         .chain(std::iter::once("token".len()))
         .max()
         .unwrap_or(0);
 
-    for (env_key, file_key, default) in KEYS {
+    for (env_key, file_key, default, _) in KEYS {
         let (v, src) = cfg.get(env_key, file_key, default);
         println!(
             "  {file_key:width$}  {v}   ({})",
