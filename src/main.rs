@@ -12,6 +12,7 @@ mod config;
 mod contract;
 mod discovery;
 mod project;
+mod secrets;
 mod selfupgrade;
 
 use std::io::Write;
@@ -48,6 +49,8 @@ fn main() {
             std::process::exit(0);
         }
         "selfupgrade" => selfupgrade::run(rest),
+        // 何が展開されるのかを、金庫に触らずに確かめる。SPEC.md §10.6。
+        "secrets" => secrets::dry_run(),
         // 機械向け。シェル補完から呼ばれる。SPEC.md「補完プロトコル」参照。
         "__complete" => {
             complete(rest);
@@ -93,7 +96,44 @@ fn main() {
     // exec で自分を置き換える。ラッパープロセスを残さないので、シグナルも
     // 終了コードもサブコマンドのものがそのまま呼び出し元に伝わる。
     let mut proc = Proc::new(&cmd.path);
-    proc.args(rest).env("HAJ_NAME", &cmd.name);
+
+    // シークレット参照の展開(SPEC §10)。HAJ_SECRETS=1 のときだけ、環境変数と
+    // 引数の参照を exec の直前に解決する。解決に失敗したら本体を実行せずに止まる
+    // (未解決の参照文字列がパスワードとしてそのまま使われる事故を防ぐ)。
+    // 規約フック(--haj-describe 等)はこの経路を通らないので展開されない。
+    if secrets::enabled() {
+        for (k, v) in std::env::vars_os() {
+            let (Ok(k), Ok(v)) = (k.into_string(), v.into_string()) else {
+                continue;
+            };
+            match secrets::expand(&v) {
+                Ok(Some(resolved)) => {
+                    proc.env(&k, resolved);
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    eprintln!("haj: {k}: {e}");
+                    std::process::exit(1);
+                }
+            }
+        }
+        let mut expanded = Vec::with_capacity(rest.len());
+        for a in rest {
+            match secrets::expand(a) {
+                Ok(Some(v)) => expanded.push(v),
+                Ok(None) => expanded.push(a.clone()),
+                Err(e) => {
+                    eprintln!("haj: {e}");
+                    std::process::exit(1);
+                }
+            }
+        }
+        proc.args(expanded);
+    } else {
+        proc.args(rest);
+    }
+
+    proc.env("HAJ_NAME", &cmd.name);
     match &cmd.root {
         Some(root) => proc.env("HAJ_ROOT", root),
         None => proc.env_remove("HAJ_ROOT"),

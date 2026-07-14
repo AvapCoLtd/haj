@@ -366,6 +366,8 @@ hook_timeout_ms = 2000
 |---|---|---|---|
 | `command_path` | `HAJ_COMMAND_PATH` | `/usr/local/lib/haj/commands` | システム共通のコマンド置き場(`:` 区切り) |
 | `hook_timeout_ms` | `HAJ_HOOK_TIMEOUT_MS` | `2000` | 規約フックのタイムアウト |
+| `op_cmd` | `HAJ_OP_CMD` | `op` | op 参照の解決に使う CLI(§10) |
+| `vault_cmd` | `HAJ_VAULT_CMD` | `vault` | vault 参照の解決に使う CLI(avap は `bao` に差し替える)(§10) |
 | `token` | `HAJ_TOKEN` | (無し) | `selfupgrade` が使う GitLab トークン |
 | `gitlab` | `HAJ_GITLAB` | `https://gitlab.avaper.day` | GitLab インスタンス |
 | `project_id` | `HAJ_PROJECT_ID` | `788` | haj のプロジェクト ID |
@@ -377,9 +379,7 @@ hook_timeout_ms = 2000
 |---|---|
 | `HAJ_NO_CACHE` | `1` で説明文キャッシュを無効化(デバッグ用) |
 | `XDG_CONFIG_HOME` / `XDG_CACHE_HOME` | 置き場所そのものを決めるので、設定ファイルには書けない |
-| `HAJ_SECRETS` | (未設定) | `1` でシークレット参照の展開を有効化(§10) |
-| `HAJ_OP_CMD` | `op` | op 参照の解決に使う CLI |
-| `HAJ_VAULT_CMD` | `vault` | vault 参照の解決に使う CLI(avap は `bao` に差し替える) |
+| `HAJ_SECRETS` | `1` でシークレット参照の展開を有効化(§10)。金庫を開ける鍵を設定ファイルに常設させない |
 
 ---
 
@@ -526,8 +526,11 @@ stdlib だけで解決する。
 
 | 参照 | 解決方法 |
 |---|---|
-| op | `$HAJ_OP_CMD inject`(既定 `op`)に値を stdin で渡し、stdout を採る |
-| vault | `$HAJ_VAULT_CMD kv get -field=<フィールド> [-mount=<マウント>] <パス>`(既定 `vault`)。パスの2セグメント目が `data` なら KV v2 の API パスとみなし、`-mount=<先頭>` と相対パスに読み替える |
+| op | `op inject` に値を stdin で渡し、stdout を採る |
+| vault | `vault kv get -field=<フィールド> [-mount=<マウント>] <パス>`。パスの2セグメント目が `data` なら KV v2 の API パスとみなし、`-mount=<先頭>` と相対パスに読み替える |
+
+CLI は差し替えられる(§8.3): `HAJ_OP_CMD` / 設定 `op_cmd`(既定 `op`)、
+`HAJ_VAULT_CMD` / 設定 `vault_cmd`(既定 `vault`。avap は `bao`)。
 
 - **タイムアウトは設けない。** op のタッチ認証など、人を待つ場面が正当にある。
   規約フックの 2 秒とは別物。

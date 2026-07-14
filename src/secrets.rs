@@ -118,7 +118,7 @@ fn vault_template(value: &str) -> Result<String, String> {
 /// `vault kv get` で1フィールドを取る。パスの2セグメント目が `data` なら
 /// KV v2 の API パス(template の書き方)とみなし、mount と相対パスに読み替える。
 fn vault_fetch(path: &[&str], field: &str) -> Result<String, String> {
-    let cli = env_or("HAJ_VAULT_CMD", "vault");
+    let cli = cli_for("HAJ_VAULT_CMD", "vault_cmd", "vault");
     let mut proc = Proc::new(&cli);
     proc.args(["kv", "get", &format!("-field={field}")]);
     if path.len() >= 3 && path[1] == "data" {
@@ -133,7 +133,7 @@ fn vault_fetch(path: &[&str], field: &str) -> Result<String, String> {
 /// op は書式を解釈せず、値ごと `op inject` に渡す。埋め込みの展開も
 /// 意味論もすべて inject に従う。
 fn op_inject(value: &str) -> Result<String, String> {
-    let cli = env_or("HAJ_OP_CMD", "op");
+    let cli = cli_for("HAJ_OP_CMD", "op_cmd", "op");
     let mut proc = Proc::new(&cli);
     proc.arg("inject");
     run(proc, &cli, Some(value))
@@ -169,7 +169,10 @@ fn run(mut proc: Proc, cli: &str, stdin: Option<&str>) -> Result<String, String>
         .wait_with_output()
         .map_err(|e| format!("{cli} の結果を読めません: {e}"))?;
     if !out.status.success() {
-        return Err(format!("{cli} が失敗しました (exit {})", exit_code(&out.status)));
+        return Err(format!(
+            "{cli} が失敗しました (exit {})",
+            exit_code(&out.status)
+        ));
     }
     String::from_utf8(out.stdout)
         .map(trim_newline)
@@ -185,9 +188,7 @@ pub fn dry_run() -> ! {
         println!("HAJ_SECRETS が設定されていません (展開は無効。参照はただの文字列として渡ります)");
     }
 
-    let mut refs: Vec<(String, String)> = env::vars()
-        .filter(|(_, v)| is_reference(v))
-        .collect();
+    let mut refs: Vec<(String, String)> = env::vars().filter(|(_, v)| is_reference(v)).collect();
     refs.sort();
 
     if refs.is_empty() {
@@ -202,11 +203,12 @@ pub fn dry_run() -> ! {
     std::process::exit(0);
 }
 
-fn env_or(key: &str, default: &str) -> String {
-    env::var(key)
-        .ok()
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| default.to_string())
+/// リゾルバCLIの決定。環境変数 > 設定ファイル > 既定値(SPEC §8.3)。
+/// avap は `vault_cmd = bao` を設定ファイルに書いて差し替える。
+fn cli_for(env_key: &str, file_key: &str, default: &str) -> String {
+    crate::config::Config::load()
+        .get(env_key, file_key, default)
+        .0
 }
 
 /// 末尾の改行1つを落とす。CLI や credential ファイルが付けるもの。

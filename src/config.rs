@@ -102,6 +102,8 @@ pub const KEYS: &[(&str, &str, &str)] = &[
         "/usr/local/lib/haj/commands",
     ),
     ("HAJ_HOOK_TIMEOUT_MS", "hook_timeout_ms", "2000"),
+    ("HAJ_OP_CMD", "op_cmd", "op"),
+    ("HAJ_VAULT_CMD", "vault_cmd", "vault"),
     ("HAJ_GITLAB", "gitlab", "https://gitlab.avaper.day"),
     ("HAJ_PROJECT_ID", "project_id", "788"),
     ("HAJ_TARGET", "target", "x86_64-unknown-linux-musl"),
