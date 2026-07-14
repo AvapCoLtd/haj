@@ -47,6 +47,10 @@ pub const ALL: &[Builtin] = &[
         describe: "PATHのコマンドにシークレットを注入して実行する",
     },
     Builtin {
+        name: "docs",
+        describe: "ドキュメントを読む (コマンドの作り方・仕様・ツリーの文書)",
+    },
+    Builtin {
         name: "sh",
         describe: "シェルの1行をシークレットを注入して実行する (exec sh -c の省略形)",
     },
@@ -142,6 +146,20 @@ haj exec sh -c '<コマンド>' の省略形。追加の引数は位置パラメ
 展開の規則・HAJ_* を渡さないことは haj exec と同じ。詳細は SPEC.md §9.2。"
             .to_string(),
 
+        "docs" => "\
+haj docs [<トピック>] — 端末で読めるドキュメント。
+
+  haj docs                    トピック一覧 (出自つき)
+  haj docs writing-commands   コマンドの作り方 (haj同梱)
+  haj docs spec               コアとサブコマンドの契約の全文 (haj同梱)
+
+ツリーは commands/ と並んで docs/ を持てる。<ツリー>/docs/<トピック>.md を置けば、
+コマンドと同じ探索でそのプロジェクトの中でだけ生える (説明は先頭の見出し行から取る)。
+同名は手前が勝ち、haj 同梱のものはツリー側で上書きできる。
+
+出力は素の markdown。長いものはページャへ: haj docs spec | less"
+            .to_string(),
+
         "selfupgrade" => selfupgrade::long_help(),
 
         "secrets" => "\
@@ -208,6 +226,7 @@ pub fn complete(name: &str, words: &[String]) -> Vec<String> {
                 Vec::new()
             }
         }
+        "docs" => crate::docs::complete(words),
         _ => Vec::new(),
     }
 }

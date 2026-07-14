@@ -70,32 +70,12 @@ pub fn active_project() -> Option<Project> {
 /// 3. `$HAJ_COMMAND_PATH` の各ディレクトリ    — 全社/イメージ共通
 pub fn command_dirs() -> Vec<Dir> {
     let mut dirs = Vec::new();
-    let home = home_dir();
 
-    // 1. カレントから上へ。ただし `.haj` を持つディレクトリは既定でプロジェクト境界
-    //    であり、そこで**止まる**。`root = false` と書いたツリーだけが上へ抜ける
-    //    (モノレポのサブプロジェクトが親の共通コマンドも継承したい場合)。
-    //
-    //    止めないと、誰かが `~/repos/.haj/commands/setup` を置いただけで、その配下の
-    //    全リポジトリに `haj setup` が生えてしまう。置いた本人以外は気づけない。
-    if let Ok(cwd) = env::current_dir() {
-        for ancestor in cwd.ancestors() {
-            if Some(ancestor) == home.as_deref() {
-                continue; // ~/.haj は個人用。2 で拾う
-            }
-            let Some(proj) = Project::load(ancestor) else {
-                continue;
-            };
-            let d = ancestor.join(".haj").join("commands");
-            if d.is_dir() {
-                dirs.push(Dir {
-                    path: d,
-                    origin: Origin::Project(proj.name.clone()),
-                });
-            }
-            if proj.root {
-                break; // ここが境界
-            }
+    // 1. カレントから上へ(境界の規則は project_trees を参照)。
+    for (tree, origin) in project_trees() {
+        let d = tree.join("commands");
+        if d.is_dir() {
+            dirs.push(Dir { path: d, origin });
         }
     }
 
@@ -121,6 +101,64 @@ pub fn command_dirs() -> Vec<Dir> {
     }
 
     dirs
+}
+
+/// カレントから上へ辿って見つかるプロジェクトのツリー(`.haj` ディレクトリ)を、
+/// 優先度の高い順に返す。`commands/` の有無には依存しない — docs だけ置くツリーも
+/// 正当(§9.3)。
+///
+/// `.haj` を持つディレクトリは既定でプロジェクト境界であり、そこで**止まる**。
+/// `root = false` と書いたツリーだけが上へ抜ける(モノレポのサブプロジェクトが
+/// 親の共通コマンドも継承したい場合)。止めないと、誰かが
+/// `~/repos/.haj/commands/setup` を置いただけで、その配下の全リポジトリに
+/// `haj setup` が生えてしまう。置いた本人以外は気づけない。
+fn project_trees() -> Vec<(PathBuf, Origin)> {
+    let mut trees = Vec::new();
+    let home = home_dir();
+    if let Ok(cwd) = env::current_dir() {
+        for ancestor in cwd.ancestors() {
+            if Some(ancestor) == home.as_deref() {
+                continue; // ~/.haj は個人用。別枠で拾う
+            }
+            let Some(proj) = Project::load(ancestor) else {
+                continue;
+            };
+            trees.push((ancestor.join(".haj"), Origin::Project(proj.name.clone())));
+            if proj.root {
+                break; // ここが境界
+            }
+        }
+    }
+    trees
+}
+
+/// docs/ を持ちうるツリーを優先度の高い順に返す(§9.3)。
+/// 探索順・境界はコマンドと同一だが、`commands/` の有無には依存しない。
+/// システム共通は `$HAJ_COMMAND_PATH` の各エントリの親(`root_of` と同じ規則)。
+pub fn doc_trees() -> Vec<(PathBuf, Origin)> {
+    let mut trees = project_trees();
+
+    if let Some(d) = crate::config::config_dir() {
+        if d.is_dir() {
+            trees.push((d, Origin::User));
+        }
+    }
+    if let Some(home) = home_dir() {
+        let legacy = home.join(".haj");
+        if legacy.is_dir() {
+            trees.push((legacy, Origin::User));
+        }
+    }
+
+    let cfg = crate::config::Config::load();
+    let (system, _) = cfg.get("HAJ_COMMAND_PATH", "command_path", DEFAULT_COMMAND_PATH);
+    for part in system.split(':').filter(|s| !s.is_empty()) {
+        if let Some(root) = root_of(Path::new(part)) {
+            trees.push((root, Origin::System));
+        }
+    }
+
+    trees
 }
 
 /// 個人用コマンドの置き場所。
@@ -286,6 +324,7 @@ pub fn is_reserved(name: &str) -> bool {
             | "commands"
             | "which"
             | "config"
+            | "docs"
             | "exec"
             | "sh"
             | "selfupgrade"

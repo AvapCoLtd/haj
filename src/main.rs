@@ -11,6 +11,7 @@ mod cache;
 mod config;
 mod contract;
 mod discovery;
+mod docs;
 mod project;
 mod secrets;
 mod selfupgrade;
@@ -106,6 +107,8 @@ fn main() {
             std::process::exit(0);
         }
         "selfupgrade" => selfupgrade::run(rest),
+        // 端末で読めるドキュメント。SPEC.md §9.3。
+        "docs" => docs::run(rest),
         // 何が展開されるのかを、金庫に触らずに確かめる。SPEC.md §10.6。
         "secrets" => secrets::dry_run(),
         // 機械向け。シェル補完から呼ばれる。SPEC.md「補完プロトコル」参照。
