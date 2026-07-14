@@ -8,6 +8,7 @@
 
 mod builtin;
 mod cache;
+mod completion;
 mod config;
 mod contract;
 mod discovery;
@@ -25,7 +26,7 @@ use discovery::Command;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
-const USAGE_FLAGS: &str = "使い方: haj [-C <ディレクトリ>] [--secret <名前>=<値>]... [--env <ファイル>]... [--secretfile <出力>=<テンプレート>]... <コマンド> [引数...]";
+const USAGE_FLAGS: &str = "使い方: haj [-C <ディレクトリ>] [--secret <名前>=<値>]... [--env-file <ファイル>]... [--secret-file <名前|パス>=<参照|テンプレート>]... <コマンド> [引数...]";
 
 fn main() {
     let mut args: Vec<String> = std::env::args().skip(1).collect();
@@ -42,7 +43,7 @@ fn main() {
         let mut idx = 0;
         while idx < args.len() {
             let flag = args[idx].as_str();
-            if !matches!(flag, "-C" | "--secret" | "--env" | "--secretfile") {
+            if !matches!(flag, "-C" | "--secret" | "--env-file" | "--secret-file") {
                 break;
             }
             let Some(arg) = args.get(idx + 1) else {
@@ -96,14 +97,14 @@ fn main() {
     let name = name.as_str();
     let rest: &[String] = &rest;
 
-    // 受け渡しフラグは「本体を実行する」ときにだけ意味がある。
-    // exec / sh 以外の組み込みに続けて書かれたら使い方の誤り(SPEC §10.7)。
+    // 受け渡しフラグは「本体を実行する」ときと、その dry-run のときにだけ意味がある。
+    // それ以外の組み込みに続けて書かれたら使い方の誤り(SPEC §10.2)。
     if !deliveries.is_empty()
-        && !matches!(name, "exec" | "sh")
+        && !matches!(name, "exec" | "sh" | "secrets")
         && (discovery::is_reserved(name) || name.starts_with('-'))
     {
         die(&format!(
-            "--secret / --env / --secretfile は <コマンド> の実行時にだけ使えます\n{USAGE_FLAGS}"
+            "--secret / --env-file / --secret-file は <コマンド> の実行時にだけ使えます\n{USAGE_FLAGS}"
         ));
     }
 
@@ -133,8 +134,10 @@ fn main() {
         "selfupgrade" => selfupgrade::run(rest),
         // 端末で読めるドキュメント。SPEC.md §9.3。
         "docs" => docs::run(rest),
+        // 補完スクリプトを吐く。eval "$(haj completion zsh)" で使う。SPEC.md §9.4。
+        "completion" => completion::run(rest),
         // 何が展開されるのかを、金庫に触らずに確かめる。SPEC.md §10.6。
-        "secrets" => secrets::dry_run(),
+        "secrets" => secrets::run(rest, &deliveries),
         // 機械向け。シェル補完から呼ばれる。SPEC.md「補完プロトコル」参照。
         "__complete" => {
             complete(rest);
@@ -246,45 +249,9 @@ fn die(msg: &str) -> ! {
 /// 規約フック(--haj-describe 等)はこの経路を通らないので展開されない。
 fn prepare_proc(path: &std::path::Path, args: &[String], deliveries: &[secrets::Delivery]) -> Proc {
     let mut proc = Proc::new(path);
+    proc.args(args);
 
-    // ambient な走査。HAJ_SECRETS=1 のときだけ。
-    if secrets::enabled() {
-        for (k, v) in std::env::vars_os() {
-            let (Ok(k), Ok(v)) = (k.into_string(), v.into_string()) else {
-                continue;
-            };
-            // 環境変数は「値全体が参照」のときだけ。op:// をたまたま文中に含む
-            // 変数(CI_MERGE_REQUEST_DESCRIPTION 等)で止まらないように。
-            match secrets::expand(&v, false) {
-                Ok(Some(resolved)) => {
-                    proc.env(&k, resolved);
-                }
-                Ok(None) => {}
-                Err(e) => {
-                    eprintln!("haj: {k}: {e}");
-                    std::process::exit(1);
-                }
-            }
-        }
-        let mut expanded = Vec::with_capacity(args.len());
-        for a in args {
-            // 引数は人が明示的に書いたもの。op の埋め込み(inject の意味論)も許す。
-            match secrets::expand(a, true) {
-                Ok(Some(v)) => expanded.push(v),
-                Ok(None) => expanded.push(a.clone()),
-                Err(e) => {
-                    eprintln!("haj: {e}");
-                    std::process::exit(1);
-                }
-            }
-        }
-        proc.args(expanded);
-    } else {
-        proc.args(args);
-    }
-
-    // 明示的な受け渡し(SPEC §10.7)。フラグを打ったこと自体が同意なので、
-    // HAJ_SECRETS のゲートは通らない。ambient な走査より後に適用する = 明示が勝つ。
+    // シークレットは**人が明示的に渡すものだけ**(SPEC §10)。環境を勝手に走査しない。
     // 書いた順に適用するので、同名の指定は後勝ち。
     for d in deliveries {
         if let Err(e) = d.apply(&mut proc) {

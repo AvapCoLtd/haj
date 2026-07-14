@@ -24,12 +24,6 @@ pub const DEFAULT_VAULT_LOGIN: &str = "off";
 /// vault 参照の解決に使う CLI。OpenBao なら設定で secrets.vault_cmd = bao。
 pub const DEFAULT_VAULT_CMD: &str = "vault";
 
-/// 展開は明示のオプトイン。clone した直後のリポジトリで勝手に金庫が開く、
-/// という事故を防ぐため、既定では何もしない。
-pub fn enabled() -> bool {
-    env::var("HAJ_SECRETS").map(|v| v == "1").unwrap_or(false)
-}
-
 /// 値が参照なら展開して Some を、参照でなければ None を返す(触らない)。
 /// 解決に失敗したら Err。呼び出し側は本体を実行せずに止まること(fail-fast)。
 ///
@@ -110,7 +104,7 @@ fn vault_template(value: &str) -> Result<String, String> {
 }
 
 /// 正準形トリプルを先頭から1つ読む。読めたら (パス, フィールド, 消費したバイト数)。
-/// テンプレート描画(--secretfile)が同じ規則で文中のブロックを置換できるように、
+/// テンプレート描画(--secret-file)が同じ規則で文中のブロックを置換できるように、
 /// 「値全体」の判定は呼び出し側に委ねる。
 fn parse_canonical(s: &str) -> Option<(String, String, usize)> {
     let (b1, r1) = take_block(s)?;
@@ -138,15 +132,23 @@ fn take_block(s: &str) -> Option<(&str, &str)> {
     Some((inner[..end].trim(), &inner[end + 2..]))
 }
 
-/// 明示的な受け渡し(SPEC §10.7)。サブコマンド名の**前**のグローバルフラグ。
-/// フラグを打ったこと自体が同意なので、HAJ_SECRETS のゲートは通らない。
+/// 明示的な受け渡し(SPEC §10.2)。サブコマンド名の**前**のグローバルフラグ。
+/// フラグを打ったこと自体が同意。haj は環境を勝手に走査しない。
 pub enum Delivery {
     /// `--secret <名前>=<値>` — 展開して環境変数で渡す。参照でなければ平文のまま
     Secret { name: String, value: String },
-    /// `--env <ファイル>` — `key = value` を読み、値全体規則で展開して渡す
+    /// `--env-file <ファイル>` — `key = value` を読み、値全体規則で展開して渡す
     EnvFile(String),
-    /// `--secretfile <出力>=<テンプレート>` — 描画して 0600 で書く
-    SecretFile { out: String, template: String },
+    /// `--secret-file <名前|パス>=<参照|テンプレート>`
+    ///
+    /// - 右辺が**参照**なら、その値がファイルの中身になる
+    /// - 右辺が**それ以外**なら、テンプレートファイルのパスとみなして描画する
+    ///   (参照とファイルパスは形が被らないので曖昧にならない)
+    /// - 左辺が `/` を含まない**名前**なら、一時ファイルに書き、そのパスを
+    ///   環境変数 `<名前>` に入れる(`KUBECONFIG` や `GOOGLE_APPLICATION_CREDENTIALS`
+    ///   のように、ツールが「パスを環境変数で」要求する形にそのまま嵌まる)
+    /// - 左辺が**パス**(`/` を含む)なら、そこに書く(`~/.npmrc` など固定要求向け)
+    SecretFile { target: String, spec: String },
 }
 
 impl Delivery {
@@ -162,16 +164,53 @@ impl Delivery {
                     value: v.to_string(),
                 })
                 .ok_or_else(|| format!("--secret は <名前>=<値> で指定してください: {arg}")),
-            "--env" => Ok(Delivery::EnvFile(arg.to_string())),
-            "--secretfile" => split()
-                .map(|(o, t)| Delivery::SecretFile {
-                    out: o.to_string(),
-                    template: t.to_string(),
+            "--env-file" => Ok(Delivery::EnvFile(arg.to_string())),
+            "--secret-file" => split()
+                .map(|(t, v)| Delivery::SecretFile {
+                    target: t.to_string(),
+                    spec: v.to_string(),
                 })
                 .ok_or_else(|| {
-                    format!("--secretfile は <出力>=<テンプレート> で指定してください: {arg}")
+                    format!("--secret-file は <名前|パス>=<参照|テンプレート> で指定してください: {arg}")
                 }),
             other => Err(format!("不明なフラグです: {other}")),
+        }
+    }
+
+    /// 何が渡るのかを、**解決せずに**列挙する(`haj secrets --check`)。
+    /// 返すのは (種別, 名前, 値または参照)。金庫には触らない。
+    pub fn plan(&self) -> Result<Vec<(String, String, String)>, String> {
+        match self {
+            Delivery::Secret { name, value } => {
+                Ok(vec![("--secret".to_string(), name.clone(), value.clone())])
+            }
+            Delivery::EnvFile(file) => {
+                let content = std::fs::read_to_string(file)
+                    .map_err(|e| format!("--env-file {file}: 読めません: {e}"))?;
+                let mut rows: Vec<(String, String, String)> = crate::config::parse_kv(&content)
+                    .into_iter()
+                    .map(|(k, v)| ("--env-file".to_string(), k, v))
+                    .collect();
+                rows.sort();
+                Ok(rows)
+            }
+            Delivery::SecretFile { target, spec } => {
+                let where_to = if is_path(target) {
+                    target.clone()
+                } else {
+                    format!("(一時ファイル。パスは環境変数 {target} に入る)")
+                };
+                let what = if is_reference(spec) {
+                    spec.clone()
+                } else {
+                    let content = std::fs::read_to_string(spec)
+                        .map_err(|e| format!("--secret-file {spec}: 読めません: {e}"))?;
+                    // テンプレート内の参照を数えるだけ。描画も解決もしない。
+                    let refs = content.matches("{{").count() + content.matches("op://").count();
+                    format!("{spec} (テンプレート。{refs} 個の参照を描画)")
+                };
+                Ok(vec![("--secret-file".to_string(), where_to, what)])
+            }
         }
     }
 
@@ -180,7 +219,7 @@ impl Delivery {
     pub fn apply(&self, proc: &mut Proc) -> Result<(), String> {
         match self {
             Delivery::Secret { name, value } => {
-                // 明示なので op の埋め込みも展開する(argv と同じ規則)
+                // 明示なので op の埋め込みも展開する
                 let v = expand(value, true)
                     .map_err(|e| format!("--secret {name}: {e}"))?
                     .unwrap_or_else(|| value.clone());
@@ -189,31 +228,91 @@ impl Delivery {
             }
             Delivery::EnvFile(file) => {
                 let content = std::fs::read_to_string(file)
-                    .map_err(|e| format!("--env {file}: 読めません: {e}"))?;
+                    .map_err(|e| format!("--env-file {file}: 読めません: {e}"))?;
                 for (k, v) in crate::config::parse_kv(&content) {
-                    // 値全体規則(環境変数の走査と同じ)。ファイルは中間層なので
-                    // 埋め込みは解釈しない
+                    // 値全体規則。ファイルの値は埋め込みを解釈しない
                     let v = expand(&v, false)
-                        .map_err(|e| format!("--env {file}: {k}: {e}"))?
+                        .map_err(|e| format!("--env-file {file}: {k}: {e}"))?
                         .unwrap_or(v);
                     proc.env(k, v);
                 }
                 Ok(())
             }
-            Delivery::SecretFile { out, template } => {
-                let content = std::fs::read_to_string(template)
-                    .map_err(|e| format!("--secretfile {template}: 読めません: {e}"))?;
-                let rendered = render_template(&content)
-                    .map_err(|e| format!("--secretfile {template}: {e}"))?;
-                write_secret_file(out, &rendered)
-                    .map_err(|e| format!("--secretfile {out}: 書けません: {e}"))
+            Delivery::SecretFile { target, spec } => {
+                // 中身を作る。参照ならその値、そうでなければテンプレートを描画。
+                let content = if is_reference(spec) {
+                    expand(spec, true)
+                        .map_err(|e| format!("--secret-file {target}: {e}"))?
+                        .unwrap_or_else(|| spec.clone())
+                } else {
+                    let tpl = std::fs::read_to_string(spec)
+                        .map_err(|e| format!("--secret-file {spec}: 読めません: {e}"))?;
+                    render_template(&tpl).map_err(|e| format!("--secret-file {spec}: {e}"))?
+                };
+
+                // 書き先を決める。名前なら一時ファイル + パスを環境変数へ。
+                let path = if is_path(target) {
+                    expand_tilde(target)
+                } else {
+                    runtime_dir()?.join(target)
+                };
+                write_secret_file(&path, &content)
+                    .map_err(|e| format!("--secret-file {}: 書けません: {e}", path.display()))?;
+                if !is_path(target) {
+                    proc.env(target, &path);
+                }
+                Ok(())
             }
         }
     }
 }
 
-/// `--secretfile` のテンプレート描画。vault の正準形ブロックを置換し、
-/// op:// を含めばファイル全体を `op inject` に通す(SPEC §10.7)。
+/// 左辺が**環境変数の名前**か。妥当な名前(英数字と `_`、先頭は数字でない)のときだけ
+/// 名前とみなし、それ以外(`config.ini` / `~/.npmrc` / `./out` など)はパスとして扱う。
+///
+/// `/` の有無だけで見ると `config.ini` が「名前」になってしまい、環境変数として
+/// 妥当でないものを export する羽目になる。
+fn is_path(target: &str) -> bool {
+    !is_env_name(target)
+}
+
+fn is_env_name(s: &str) -> bool {
+    !s.is_empty()
+        && !s.starts_with(|c: char| c.is_ascii_digit())
+        && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+fn expand_tilde(path: &str) -> std::path::PathBuf {
+    if let Some(rest) = path.strip_prefix("~/") {
+        if let Some(home) = env::var_os("HOME") {
+            return std::path::PathBuf::from(home).join(rest);
+        }
+    }
+    std::path::PathBuf::from(path)
+}
+
+/// シークレットの一時ファイルを置くディレクトリ。**cwd には決して書かない**
+/// (リポジトリに置かれて commit される事故を防ぐ)。
+///
+/// `$XDG_RUNTIME_DIR`(tmpfs。ログアウトで消える)を優先し、無ければ `$TMPDIR`。
+/// mode 0700 の、この実行専用のディレクトリを作る。
+///
+/// **haj はこのファイルを消さない。** コアは exec(2) で自分を置き換えるため、
+/// 実行後の後始末は構造的に不可能(SPEC §10.4)。
+fn runtime_dir() -> Result<std::path::PathBuf, String> {
+    use std::os::unix::fs::PermissionsExt;
+    let base = env::var_os("XDG_RUNTIME_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(env::temp_dir);
+    let dir = base.join(format!("haj.{}", std::process::id()));
+    std::fs::create_dir_all(&dir).map_err(|e| format!("{} を作れません: {e}", dir.display()))?;
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))
+        .map_err(|e| format!("{} の権限を設定できません: {e}", dir.display()))?;
+    Ok(dir)
+}
+
+/// `--secret-file` のテンプレート描画。vault の正準形ブロックを置換し、
+/// op:// を含めばファイル全体を `op inject` に通す(SPEC §10.2)。
 /// `vault://` 短縮形はテンプレート内では解釈しない(トークンの境界が曖昧になる)。
 fn render_template(content: &str) -> Result<String, String> {
     let mut out = String::new();
@@ -243,8 +342,8 @@ fn render_template(content: &str) -> Result<String, String> {
 
 /// 全て解決できてから mode 0600 で書く。半端なファイルを残さない。
 /// 書いたファイルは消さない — コアは exec(2) で自分を置き換えるため、
-/// 実行後の後始末は構造的に不可能(SPEC §10.7)。
-fn write_secret_file(path: &str, content: &str) -> Result<(), String> {
+/// 実行後の後始末は構造的に不可能(SPEC §10.4)。
+fn write_secret_file(path: &std::path::Path, content: &str) -> Result<(), String> {
     use std::io::Write as _;
     use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
     let mut f = std::fs::OpenOptions::new()
@@ -274,7 +373,7 @@ fn vault_fetch(path: &[&str], field: &str) -> Result<String, String> {
     } else {
         proc.arg(path.join("/"));
     }
-    run(proc, &cli, None)
+    run_cli(proc, &cli, None)
 }
 
 /// vault CLI のプロセスを作る。サーバは、環境に VAULT_ADDR / BAO_ADDR が
@@ -354,13 +453,13 @@ fn op_inject(value: &str) -> Result<String, String> {
     let cli = cli_for("HAJ_OP_CMD", "secrets.op_cmd", "op");
     let mut proc = Proc::new(&cli);
     proc.arg("inject");
-    run(proc, &cli, Some(value))
+    run_cli(proc, &cli, Some(value))
 }
 
 /// リゾルバCLIを実行して stdout を採る。stderr はそのまま流す(失敗の理由は
 /// CLI自身が一番よく知っている)。タイムアウトは設けない — op のタッチ認証など、
 /// 人を待つ場面が正当にある。規約フックの2秒とは別物。
-fn run(mut proc: Proc, cli: &str, stdin: Option<&str>) -> Result<String, String> {
+fn run_cli(mut proc: Proc, cli: &str, stdin: Option<&str>) -> Result<String, String> {
     proc.stdin(if stdin.is_some() {
         Stdio::piped()
     } else {
@@ -397,27 +496,44 @@ fn run(mut proc: Proc, cli: &str, stdin: Option<&str>) -> Result<String, String>
         .map_err(|_| format!("{cli} の出力が UTF-8 ではありません"))
 }
 
-/// `haj secrets` — 何が展開対象なのかを、解決せずに確かめる(SPEC §10.6)。
-/// 参照の対象(パス)は出すが、値は解決しない。金庫に問い合わせない。
-pub fn dry_run() -> ! {
-    if enabled() {
-        println!("HAJ_SECRETS=1 (展開は有効)");
-    } else {
-        println!("HAJ_SECRETS が設定されていません (展開は無効。参照はただの文字列として渡ります)");
+/// `haj secrets --check` — **何が渡るのかを、解決せずに**確かめる(SPEC §10.6)。
+///
+/// グローバルフラグ(`--secret` / `--env` / `--secretfile`)で渡そうとしているものを
+/// 列挙する。参照の**対象**(パス)は出すが、**値は解決しない** — 金庫に問い合わせない
+/// ので、OIDC ログインもタッチ認証も起きない(参照そのものは秘密ではない)。
+///
+///   haj --secret DB_PASS=vault://... --env-file ./mig.env secrets --check
+pub fn run(args: &[String], deliveries: &[Delivery]) -> ! {
+    if args.first().map(String::as_str) != Some("--check") {
+        eprintln!(
+            "haj: 使い方: haj [--secret <名前>=<値>]... [--env-file <ファイル>]... \
+             [--secret-file <名前|パス>=<参照|テンプレート>]... secrets --check"
+        );
+        std::process::exit(1);
     }
 
-    let mut refs: Vec<(String, String)> = env::vars().filter(|(_, v)| is_reference(v)).collect();
-    refs.sort();
+    if deliveries.is_empty() {
+        println!("渡すシークレットの指定がありません。");
+        println!("  haj --secret DB_PASS=vault://... --env-file ./mig.env secrets --check");
+        std::process::exit(0);
+    }
 
-    if refs.is_empty() {
-        println!("\n 展開対象の環境変数はありません。");
-    } else {
-        println!("\n 環境変数:");
-        let width = refs.iter().map(|(k, _)| k.len()).max().unwrap_or(8);
-        for (k, v) in &refs {
-            println!("   {k:width$}  {v}");
+    println!(" 実行時に渡るもの (値は解決していません):");
+    for d in deliveries {
+        match d.plan() {
+            Ok(rows) => {
+                for (kind, name, value) in rows {
+                    let mark = if is_reference(&value) { "→" } else { " " };
+                    println!("   {kind:10}  {name:20}  {mark} {value}");
+                }
+            }
+            Err(e) => {
+                eprintln!("haj: {e}");
+                std::process::exit(1);
+            }
         }
     }
+    println!("\n (→ が付いたものが展開されます。他は平文としてそのまま渡ります)");
     std::process::exit(0);
 }
 

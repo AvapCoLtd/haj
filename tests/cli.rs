@@ -1061,3 +1061,28 @@ fn ハイフンcのチルダはhomeに展開される() {
     let out = haj_with_config(&sb, &sb.dir, &["-C", "~/sub", "inner"]);
     assert!(out.status.success(), "チルダが展開されていない");
 }
+
+// ---- haj completion(SPEC §9.4)----
+
+#[test]
+fn completionは補完スクリプトを出す() {
+    let sb = Sandbox::new("completion");
+    let cp = sb.path("nonexistent");
+    let cp = cp.to_str().unwrap();
+
+    let zsh = sb.haj(&sb.dir, cp, &["completion", "zsh"]);
+    assert!(zsh.status.success());
+    let s = stdout(&zsh);
+    assert!(s.starts_with("#compdef haj"), "zsh補完ではない:\n{s}");
+    assert!(s.contains("__complete"), "コアに聞く形になっていない");
+
+    let bash = stdout(&sb.haj(&sb.dir, cp, &["completion", "bash"]));
+    assert!(bash.contains("complete -F"), "bash補完ではない:\n{bash}");
+
+    // 未対応シェルと引数なしは使い方エラー
+    assert_eq!(
+        sb.haj(&sb.dir, cp, &["completion", "fish"]).status.code(),
+        Some(1)
+    );
+    assert_eq!(sb.haj(&sb.dir, cp, &["completion"]).status.code(), Some(1));
+}
