@@ -36,24 +36,22 @@ $ cd ~/repos/some-other-project && haj
 
 ## インストール
 
-### バイナリ (Linux x86_64)
+### バイナリ (Linux x86_64 / aarch64)
 
 依存ゼロの静的バイナリ。glibc も bash も要らない(alpine でも動く)。
 
 ```sh
-VERSION=0.1.0
-TOKEN=<あなたのGitLabトークン>   # このリポジトリはprivateなので必要
-curl -fsSL --header "PRIVATE-TOKEN: $TOKEN" \
-  "https://gitlab.avaper.day/api/v4/projects/788/packages/generic/haj/${VERSION}/haj-x86_64-unknown-linux-musl.tar.gz" \
+VERSION=0.12.0
+curl -fsSL "https://github.com/AvapCoLtd/haj/releases/download/v${VERSION}/haj-x86_64-unknown-linux-musl.tar.gz" \
   | tar xz
 sudo install -m 755 haj /usr/local/bin/haj
 ```
 
-`install.sh` を使うと上記を自動でやる。
+`install.sh` を使うと上記を自動でやる(トークン不要)。
 
 ```sh
-HAJ_TOKEN=<トークン> ./install.sh            # 最新版
-HAJ_TOKEN=<トークン> ./install.sh 0.1.0      # 版を指定
+curl -fsSL https://raw.githubusercontent.com/AvapCoLtd/haj/master/install.sh | sh
+./install.sh 0.12.0    # 版を指定
 ```
 
 ### 他のプラットフォーム
@@ -201,12 +199,15 @@ echo "==> ${HAJ_PROJECT}: セットアップします"
 
 ```
 # ~/.config/haj/config
-gitlab     = https://gitlab.avaper.day
-project_id = 788
-token      = glpat-xxxxxxxx
+# 鍵は git と同じドット記法(selfupgrade.* / secrets.* / ドット無しはコア)
+secrets.vault_cmd  = bao                        # OpenBao を使うなら
+secrets.vault_addr = https://vault.example.com
+secrets.vault_login = -method=oidc              # 未ログイン時に自動ログイン
 
 hook_timeout_ms = 2000
 ```
+
+雛形は `haj config --init > ~/.config/haj/config` で出せます。
 
 値は **環境変数 > 設定ファイル > 既定値** の順で決まります。この3段が見えないと
 「なぜ効かないのか」を調べる手段が無くなるので、`haj config` が**実効値と一緒に

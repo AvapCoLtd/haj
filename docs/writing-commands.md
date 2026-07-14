@@ -111,7 +111,7 @@ echo "==> ${HAJ_PROJECT}: セットアップします (${HAJ_PROJECT_DIR})"
 
 ```sh
 # 呼ぶ側:
-haj --secret DB_PASS=vault://avap/data/db/password mig up
+haj --secret DB_PASS=vault://secret/data/db/password mig up
 # コマンド側は $DB_PASS を読むだけ。bao の存在を知らなくてよい
 ```
 

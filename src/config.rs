@@ -159,16 +159,22 @@ pub const KEYS: &[(&str, &str, &str, &str)] = &[
         "未ログイン時に自動実行する login の引数。off で無効化",
     ),
     (
+        "HAJ_GITHUB",
+        "selfupgrade.github",
+        crate::selfupgrade::DEFAULT_GITHUB,
+        "haj 自身の取得元 GitHub リポジトリ (public。認証不要)",
+    ),
+    (
         "HAJ_GITLAB",
         "selfupgrade.gitlab",
         crate::selfupgrade::DEFAULT_GITLAB,
-        "haj 自身の取得元 GitLab (selfupgrade)",
+        "private な取得元を使うとき: GitLab インスタンス",
     ),
     (
         "HAJ_PROJECT_ID",
         "selfupgrade.project_id",
         crate::selfupgrade::DEFAULT_PROJECT_ID,
-        "haj のプロジェクト ID",
+        "private な取得元を使うとき: GitLab のプロジェクト ID",
     ),
     (
         "HAJ_TARGET",
@@ -222,16 +228,10 @@ pub fn template() {
     println!("# alias.<名前> = <語...>  名前が語の並びに展開され、残りの引数が続く");
     println!("# alias.ie = -C ~/repos/example-app");
     println!();
-    println!("# selfupgrade が使う GitLab トークン (環境変数: HAJ_TOKEN)。既定値なし。");
+    println!("# private な取得元(GitLab)を使うときのトークン (環境変数: HAJ_TOKEN)。");
     println!("# 平文でも、シークレット参照でもよい (SPEC §8.4):");
-    println!("# selfupgrade.token = glpat-xxxxxxxx");
-    println!(
-        "# selfupgrade.token = {}",
-        crate::profile::pick(
-            "vault://users/<名前>/gitlab-pat/gitlab.avaper.day/token",
-            "vault://<マウント>/<パス>/token",
-        )
-    );
+    println!("# selfupgrade.token = <トークン>");
+    println!("# selfupgrade.token = vault://<マウント>/<パス>/token");
 }
 
 /// `haj config` の出力。
