@@ -501,21 +501,31 @@ TAB を押すたびに金庫へ問い合わせが飛ぶのは論外(タッチ認
 
 | 参照 | 意味 |
 |---|---|
-| `op://<金庫>/<アイテム>/[<セクション>/]<フィールド>` | 1Password。**`op inject` に丸ごと委譲**し、書式も意味論も inject に従う(値に**埋め込まれた**参照も展開される) |
+| `op://<金庫>/<アイテム>/[<セクション>/]<フィールド>` | 1Password。**`op inject` に丸ごと委譲**し、書式も意味論も inject に従う |
 | `{{ with secret "<パス>" }}{{ .Data.data.<フィールド> }}{{ end }}` | Vault。vault-agent template の正準形。KV v2 の `/data/` 入りパスをそのまま書く |
 | `vault://<パス>/<フィールド>` | 上の短縮形。**最後のセグメントがフィールド**、残りがパス(パスの規約は template 形と同じ) |
 | `env://VAR` | 環境変数 VAR の値。再帰はしない(1段だけ) |
 | `file://<パス>` | ファイルの中身。docker secrets / systemd credentials との接続に |
 
-op 以外は、**値全体が参照のときだけ**展開する(`vault://` 等で始まる、または `{{` で
-始まり `}}` で終わる)。文字列中への埋め込みは解釈しない。接続文字列の組み立ては
-サブコマンド側の責務。
+**環境変数の走査は、値全体が参照のときだけ**展開する(`op://` / `vault://` 等で始まる、
+または `{{` で始まり `}}` で終わる)。文字列中への埋め込みは解釈しない。接続文字列の
+組み立てはサブコマンド側の責務。
+
+埋め込みを許すと「参照をたまたま文中に含む」だけの変数まで解決しに行ってしまう。
+実例: GitLab の MR パイプラインは `CI_MERGE_REQUEST_DESCRIPTION` に MR の説明文を
+入れる。説明文に `op://` の例が書いてあるだけで、op の解決が走って全体が止まる。
+
+**コマンドライン引数では op の埋め込みも展開する**(inject の意味論のまま)。
+argv は人がその実行のために明示的に書いたものなので、誤爆の心配がない。
 
 ```
 DB_PASSWORD=vault://avap/data/hoge/fuga                               → 展開される
 OTP={{ with secret "avap/data/hoge" }}{{ .Data.data.fuga }}{{ end }}  → 展開される(上と等価)
 TOKEN=op://Infra/ci/token                                             → op inject が展開
 DB_URL=postgres://u:vault://a/b/c@host/db                             → 展開されない(ただの文字列)
+NOTE="説明: op://a/b/c を参照…"                                        → 展開されない(値全体が参照ではない)
+
+haj deploy --token "Bearer op://Infra/ci/token"                       → 引数なので埋め込みも展開される
 ```
 
 vault の template 形は正準形**のみ**解釈する。`printf` 等を含む任意の式が来たら

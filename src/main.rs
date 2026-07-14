@@ -106,7 +106,9 @@ fn main() {
             let (Ok(k), Ok(v)) = (k.into_string(), v.into_string()) else {
                 continue;
             };
-            match secrets::expand(&v) {
+            // 環境変数は「値全体が参照」のときだけ。op:// をたまたま文中に含む
+            // 変数(CI_MERGE_REQUEST_DESCRIPTION 等)で止まらないように。
+            match secrets::expand(&v, false) {
                 Ok(Some(resolved)) => {
                     proc.env(&k, resolved);
                 }
@@ -119,7 +121,8 @@ fn main() {
         }
         let mut expanded = Vec::with_capacity(rest.len());
         for a in rest {
-            match secrets::expand(a) {
+            // 引数は人が明示的に書いたもの。op の埋め込み(inject の意味論)も許す。
+            match secrets::expand(a, true) {
                 Ok(Some(v)) => expanded.push(v),
                 Ok(None) => expanded.push(a.clone()),
                 Err(e) => {

@@ -272,23 +272,56 @@ fn 引数の参照も展開される() {
 }
 
 #[test]
-fn op参照はinjectに委譲され埋め込みも展開される() {
+fn op参照は値全体なら環境変数でも展開される() {
     let sb = Sandbox::new("op");
     let cp = sb.show_command();
     let op = sb.fake_op();
 
-    // 値全体ではなく埋め込みでも、op だけは inject の意味論に従って展開される
     let out = sb.haj(
         &cp,
         &["show"],
         &[
             ("HAJ_SECRETS", "1"),
             ("HAJ_OP_CMD", op.to_str().unwrap()),
-            ("HAJ_T_VALUE", "Bearer op://Infra/ci/token"),
+            ("HAJ_T_VALUE", "op://Infra/ci/token"),
         ],
     );
     assert!(out.status.success(), "stderr: {}", stderr(&out));
+    assert_eq!(stdout(&out).trim(), "RESOLVED");
+}
+
+#[test]
+fn 引数のop参照は埋め込みでもinjectで展開される() {
+    let sb = Sandbox::new("op-argv");
+    let cp = sb.args_command();
+    let op = sb.fake_op();
+
+    // argv は人が明示的に書いたもの。inject の意味論(埋め込み展開)のまま
+    let out = sb.haj(
+        &cp,
+        &["args", "Bearer op://Infra/ci/token"],
+        &[("HAJ_SECRETS", "1"), ("HAJ_OP_CMD", op.to_str().unwrap())],
+    );
+    assert!(out.status.success(), "stderr: {}", stderr(&out));
     assert_eq!(stdout(&out).trim(), "Bearer RESOLVED");
+}
+
+#[test]
+fn 参照をたまたま文中に含む環境変数では止まらない() {
+    let sb = Sandbox::new("ci-desc");
+    let cp = sb.show_command();
+
+    // GitLab の MR パイプラインが CI_MERGE_REQUEST_DESCRIPTION に op:// の例文入りの
+    // 説明文を入れてくる、という実際に踏んだ事故の回帰テスト。
+    // 偽 op すら置かない: 解決しに行けば「op が見つかりません」で落ちるはず。
+    let note = "説明文の途中に op://Infra/ci/token が書いてあるだけ";
+    let out = sb.haj(
+        &cp,
+        &["show"],
+        &[("HAJ_SECRETS", "1"), ("HAJ_T_VALUE", note)],
+    );
+    assert!(out.status.success(), "stderr: {}", stderr(&out));
+    assert_eq!(stdout(&out).trim(), note); // 触らずそのまま渡る
 }
 
 #[test]

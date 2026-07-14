@@ -28,9 +28,14 @@ pub fn enabled() -> bool {
 
 /// 値が参照なら展開して Some を、参照でなければ None を返す(触らない)。
 /// 解決に失敗したら Err。呼び出し側は本体を実行せずに止まること(fail-fast)。
-pub fn expand(value: &str) -> Result<Option<String>, String> {
-    // 値全体が参照のものを先に見る。op だけは inject の意味論(埋め込みも展開)に
-    // 従うため「含まれていれば」で拾う。順序が入れ替わると、vault:// の中に
+///
+/// `embedded_op` は「op:// を**含む**だけで inject に回す」かどうか。
+/// argv のように**人が明示的に書いた**値だけ true にする。環境変数の走査で
+/// これをやると、参照をたまたま文中に含む変数(GitLab CI が置く
+/// CI_MERGE_REQUEST_DESCRIPTION に op:// の例文が入っている、等)を解決しようと
+/// して、無関係な理由で全体が止まる。
+pub fn expand(value: &str, embedded_op: bool) -> Result<Option<String>, String> {
+    // 値全体が参照のものを先に見る。順序が入れ替わると、vault:// の中に
     // op:// を含むような値の解釈が変わってしまう。
     if let Some(rest) = value.strip_prefix("vault://") {
         return vault_uri(rest).map(Some);
@@ -51,19 +56,20 @@ pub fn expand(value: &str) -> Result<Option<String>, String> {
             Err(e) => Err(format!("file://{path}: 読めません: {e}")),
         };
     }
-    if value.contains("op://") {
+    if value.starts_with("op://") || (embedded_op && value.contains("op://")) {
         return op_inject(value).map(Some);
     }
     Ok(None)
 }
 
 /// dry-run(`haj secrets`)用。解決せずに「展開対象か」だけ答える。
+/// 環境変数の走査と同じ規則(op も値全体のときだけ)。
 pub fn is_reference(value: &str) -> bool {
     value.starts_with("vault://")
         || (value.starts_with("{{") && value.ends_with("}}"))
         || value.starts_with("env://")
         || value.starts_with("file://")
-        || value.contains("op://")
+        || value.starts_with("op://")
 }
 
 /// `vault://<パス>/<フィールド>` — 最後のセグメントがフィールド、残りがパス。
