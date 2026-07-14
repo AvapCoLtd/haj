@@ -123,7 +123,17 @@ haj --version
 
 ## コマンドを追加する
 
-**実行可能ファイルを置くだけ。** 登録も設定ファイルも要らない。
+コマンドの足し方は3通りある。**どれも登録は要らない**(置けば生える)。
+
+| 方式 | 置き場所 | 効く範囲 | 向いているもの |
+|---|---|---|---|
+| A. プロジェクト | `<リポジトリ>/.haj/commands/<名前>` | そのリポジトリの中だけ | チームで共有する、リポジトリ固有のタスク |
+| B. グローバル | `$PATH` の `haj-<名前>` | どこでも | 個人ツール、パッケージマネージャで配るもの |
+| C. エイリアス | `~/.config/haj/config` の `alias.<名前>` | どこでも | 打鍵の短縮。既存コマンドの組み合わせ |
+
+### A. プロジェクトのコマンド(`.haj/commands/`)
+
+**基本形。** リポジトリにコミットすれば、チーム全員の `haj` にそのコマンドが生える。
 
 ```sh
 mkdir -p .haj/commands
@@ -131,21 +141,83 @@ cat > .haj/commands/deploy <<'EOF'
 #!/bin/bash
 set -euo pipefail
 
+# 規約フック。本体より先に処理する(後述)
 case "${1:-}" in
   --haj-describe) echo "本番へデプロイする"; exit 0 ;;
   --haj-help)     echo "haj deploy <staging|production>"; exit 0 ;;
   --haj-complete) shift; [ $# -eq 0 ] && printf '%s\n' staging production; exit 0 ;;
 esac
 
-echo "deploying to ${1:?環境を指定してください}..."
+echo "==> ${HAJ_PROJECT}: ${1:?環境を指定してください} へデプロイします"
 EOF
 chmod +x .haj/commands/deploy
 ```
 
-これで `haj deploy` が使え、`haj` の一覧に説明が出て、`haj deploy <TAB>` が
-`staging` / `production` を補完する。**ヘルプにも補完にも1行も書き足していない。**
+```console
+$ haj                       # 一覧に説明が出る
+   deploy     本番へデプロイする   [example-app]
+$ haj deploy <TAB>          # staging / production が補完される
+$ haj deploy staging
+==> example-app: staging へデプロイします
+```
 
-詳しい契約は [SPEC.md](SPEC.md) を参照。要点だけ:
+**ヘルプにも補完にも1行も書き足していない。** コアがコマンド自身に聞いているから。
+
+### B. グローバルなコマンド(`$PATH` の `haj-<名前>`)
+
+`$PATH` に `haj-<名前>` という実行可能ファイルを置くと、どのディレクトリでも
+`haj <名前>` で呼べる(git が `git-foo` を `git foo` にするのと同じ)。
+
+```sh
+cat > ~/bin/haj-scratch <<'EOF'
+#!/bin/sh
+case "${1:-}" in
+  --haj-describe) echo "作業用の一時ディレクトリを作って cd する"; exit 0 ;;
+esac
+mktemp -d /tmp/scratch.XXXXXX
+EOF
+chmod +x ~/bin/haj-scratch
+```
+
+```console
+$ haj scratch
+/tmp/scratch.a1B2c3
+```
+
+- 探索の**最後**なので、プロジェクトの同名コマンドには負ける(意図どおり)
+- **`HAJ_ROOT` は渡されない**(属するツリーが無い)。共通ライブラリに依存せず自己完結で書く
+- 規約フックは同じように効く。実装すれば一覧にも補完にも出る
+- 個人用に置くだけなら `~/.config/haj/commands/<名前>` でもよい(こちらは `haj-` 接頭辞が不要)
+
+### C. エイリアス(`alias.<名前>`)
+
+**新しい実行ファイルは作らず、語の並びに展開する**(git の alias と同じ)。
+
+```sh
+haj config --init > ~/.config/haj/config   # まだ無ければ雛形を出す
+```
+
+```
+# ~/.config/haj/config
+alias.web = -C ~/repos/webapp
+alias.wm  = -C ~/repos/webapp mig
+```
+
+```console
+$ haj web help          # → haj -C ~/repos/webapp help   (そのプロジェクトの一覧)
+$ haj web deploy prod   # → haj -C ~/repos/webapp deploy prod
+$ haj wm up             # → haj -C ~/repos/webapp mig up
+```
+
+- 展開は**1回だけ**(再帰しない)。残りの引数は後ろに繋がる
+- 優先順位は **組み込み > エイリアス > 探索**(`alias.help` のような予約語は無視される)
+- 定義を読むのは**ユーザー設定だけ**。リポジトリからは定義できない
+  (clone したリポジトリに `alias.mig = sh '...'` を仕込ませないため)
+- `haj which <名前>` で展開を確認でき、`haj` の一覧にもエイリアスの節が出る
+
+### 規約(A / B に共通)
+
+コアはコマンドの中身を知らない。知りたいことは**コマンド自身に聞く**。
 
 | 引数 | 返すもの | |
 |---|---|---|
@@ -153,11 +225,18 @@ chmod +x .haj/commands/deploy
 | `--haj-help` | 詳しい使い方 | 任意。`haj help <名前>` |
 | `--haj-complete <入力済みの語...>` | 補完候補(改行区切り) | 任意。TAB補完 |
 
-コアは `HAJ_ROOT`(そのコマンドが属するツリー)と `HAJ_NAME` を環境変数で渡すので、
-共通ライブラリは `. "$HAJ_ROOT/lib/common.sh"` で読める。
+コアが渡す環境変数:
+
+| 変数 | 意味 |
+|---|---|
+| `HAJ_ROOT` | そのコマンドが属するツリー。共通ライブラリは `. "$HAJ_ROOT/lib/common.sh"` |
+| `HAJ_NAME` | 呼ばれた名前 |
+| `HAJ_PROJECT` / `HAJ_PROJECT_DIR` | いま操作対象のプロジェクト。**破壊的なコマンドは対象を名乗ること** |
 
 **規約フックは共通ライブラリを読む前に処理すること。** 説明文を1行返すためだけに
-重い初期化をすると、TAB のたびにその分だけ待たされる。
+重い初期化をすると、TAB のたびにその分だけ待たされる(フックは2秒で打ち切られる)。
+
+より詳しくは `haj docs writing-commands`(端末で読める)。契約の全文は [SPEC.md](SPEC.md)。
 
 ## 探索順
 
