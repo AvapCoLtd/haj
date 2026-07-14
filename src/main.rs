@@ -24,26 +24,35 @@ use discovery::Command;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
-const USAGE_FLAGS: &str = "使い方: haj [--secret <名前>=<値>]... [--env <ファイル>]... [--secretfile <出力>=<テンプレート>]... <コマンド> [引数...]";
+const USAGE_FLAGS: &str = "使い方: haj [-C <ディレクトリ>] [--secret <名前>=<値>]... [--env <ファイル>]... [--secretfile <出力>=<テンプレート>]... <コマンド> [引数...]";
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
 
-    // haj自身のグローバルフラグ(SPEC §10.7)。**サブコマンド名の前にだけ**書ける。
+    // haj自身のグローバルフラグ(SPEC §3.2 / §10.7)。**サブコマンド名の前にだけ**書ける。
     // 名前以降は解釈しない(§11)ので、フラグ以外に当たったらそこで止まる。
     let mut deliveries: Vec<secrets::Delivery> = Vec::new();
     let mut idx = 0;
     while idx < args.len() {
         let flag = args[idx].as_str();
-        if !matches!(flag, "--secret" | "--env" | "--secretfile") {
+        if !matches!(flag, "-C" | "--secret" | "--env" | "--secretfile") {
             break;
         }
         let Some(arg) = args.get(idx + 1) else {
             die(&format!("{flag} には値が要ります\n{USAGE_FLAGS}"));
         };
-        match secrets::Delivery::parse(flag, arg) {
-            Ok(d) => deliveries.push(d),
-            Err(e) => die(&e),
+        if flag == "-C" {
+            // git と同じ。この場で移動するので、探索・プロジェクト境界・HAJ_PROJECT・
+            // サブコマンドの cwd がすべて移動先を起点になる。複数指定は順に適用され、
+            // 相対パスは直前の -C からの相対(git と同一の意味論)。
+            if let Err(e) = std::env::set_current_dir(arg) {
+                die(&format!("-C {arg}: 移動できません: {e}"));
+            }
+        } else {
+            match secrets::Delivery::parse(flag, arg) {
+                Ok(d) => deliveries.push(d),
+                Err(e) => die(&e),
+            }
         }
         idx += 2;
     }
@@ -458,6 +467,17 @@ fn print_help(topic: Option<&str>) {
         println!("   {:width$}  {}", b.name, b.describe, width = width);
     }
 
+    // グローバルフラグ。コマンドと違って探索でも組み込み表でもないので、
+    // ここに載せないとどこにも出ない(一覧が実態と一致する、という約束の一部)。
+    println!("\n グローバルフラグ (コマンド名の前に書く):");
+    println!("   -C <ディレクトリ>                   そのディレクトリを起点に実行する (gitと同じ。複数可)");
+    println!("   --secret <名前>=<値>              参照を展開して環境変数で渡す");
+    println!("   --env <ファイル>                   key = value を読み、値を展開して渡す");
+    println!(
+        "   --secretfile <出力>=<テンプレート>   テンプレートを描画して 0600 で書いてから実行"
+    );
+    println!("   (シークレット参照の詳細は haj help secrets)");
+
     if let Some(footer) = contract::fragment("footer") {
         print!("{footer}");
     }
@@ -465,7 +485,7 @@ fn print_help(topic: Option<&str>) {
 }
 
 fn print_usage() {
-    eprintln!("使い方: haj <コマンド> [引数...]\n");
+    eprintln!("{USAGE_FLAGS}\n");
     let mut cache = DescribeCache::load();
     let cmds = discovery::list();
     if cmds.is_empty() {
