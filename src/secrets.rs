@@ -191,6 +191,9 @@ pub enum Delivery {
     /// - 左辺が `/` を含まない**名前**なら、一時ファイルに書き、そのパスを
     ///   環境変数 `<名前>` に入れる(`KUBECONFIG` や `GOOGLE_APPLICATION_CREDENTIALS`
     ///   のように、ツールが「パスを環境変数で」要求する形にそのまま嵌まる)
+    /// - 左辺が `<大文字の名前>/<相対パス>`(`GLAB_CONFIG_DIR/config.yml`)なら、
+    ///   一時**ディレクトリ**の中に書き、ディレクトリのパスを環境変数に入れる
+    ///   (「設定ディレクトリを環境変数で」要求するツール向け)
     /// - 左辺が**パス**(`/` を含む)なら、そこに書く(`~/.npmrc` など固定要求向け)
     SecretFile { target: String, spec: String },
 }
@@ -239,7 +242,9 @@ impl Delivery {
                 Ok(rows)
             }
             Delivery::SecretFile { target, spec } => {
-                let where_to = if is_path(target) {
+                let where_to = if let Some((var, rel)) = env_dir_form(target) {
+                    format!("(一時ディレクトリの {rel}。ディレクトリのパスは環境変数 {var} に入る)")
+                } else if is_path(target) {
                     target.clone()
                 } else {
                     format!("(一時ファイル。パスは環境変数 {target} に入る)")
@@ -247,7 +252,7 @@ impl Delivery {
                 let what = if is_reference(spec) {
                     spec.clone()
                 } else {
-                    let content = std::fs::read_to_string(spec)
+                    let content = std::fs::read_to_string(expand_tilde(spec))
                         .map_err(|e| format!("--secret-file {spec}: 読めません: {e}"))?;
                     // テンプレート内の参照を数えるだけ。描画も解決もしない。
                     let refs = content.matches("{{").count() + content.matches("op://").count();
@@ -294,21 +299,57 @@ impl Delivery {
                     render_template(&tpl).map_err(|e| format!("--secret-file {spec}: {e}"))?
                 };
 
-                // 書き先を決める。名前なら一時ファイル + パスを環境変数へ。
-                let path = if is_path(target) {
-                    expand_tilde(target)
+                // 書き先を決める。
+                //   <名前>            一時ファイルに書き、パスを環境変数 <名前> へ
+                //   <名前>/<相対パス>  一時ディレクトリの中に書き、**ディレクトリ**の
+                //                     パスを環境変数 <名前> へ(GLAB_CONFIG_DIR のように
+                //                     「設定ディレクトリを環境変数で」要求するツール向け)
+                //   <パス>            そこに書く(親ディレクトリは作る)
+                let (path, env_entry) = if let Some((var, rel)) = env_dir_form(target) {
+                    let dir = runtime_dir()?.join(var);
+                    make_private_dir(&dir).map_err(|e| format!("--secret-file {target}: {e}"))?;
+                    let file = dir.join(rel);
+                    // 相対パスの中間ディレクトリも haj の一時領域内なので作ってよい。
+                    // 明示パス指定の親は作らない(タイプミスで木を生やさない)。
+                    if let Some(parent) = file.parent().filter(|p| *p != dir) {
+                        make_private_dir(parent)
+                            .map_err(|e| format!("--secret-file {target}: {e}"))?;
+                    }
+                    (file, Some((var.to_string(), dir)))
+                } else if is_path(target) {
+                    (expand_tilde(target), None)
                 } else {
-                    runtime_dir()?.join(target)
+                    let path = runtime_dir()?.join(target);
+                    (path.clone(), Some((target.clone(), path)))
                 };
                 write_secret_file(&path, &content)
                     .map_err(|e| format!("--secret-file {}: 書けません: {e}", path.display()))?;
-                if !is_path(target) {
-                    proc.env(target, &path);
+                if let Some((var, value)) = env_entry {
+                    proc.env(var, value);
                 }
                 Ok(())
             }
         }
     }
+}
+
+/// 左辺が `<環境変数名>/<相対パス>` の形か(SPEC §10.2 のディレクトリ変種)。
+/// `GLAB_CONFIG_DIR/config.yml` のように「設定**ディレクトリ**を環境変数で指す」
+/// ツールに、一時ディレクトリごと渡すためにある。
+fn env_dir_form(target: &str) -> Option<(&str, &str)> {
+    let (head, rest) = target.split_once('/')?;
+    // 小文字を含むなら相対パスとみなす(`out/config.ini` を奪わない)。
+    // 環境変数は大文字が慣習で、GLAB_CONFIG_DIR のような対象は必ず大文字。
+    let looks_env = is_env_name(head) && !head.chars().any(|c| c.is_ascii_lowercase());
+    (looks_env && !rest.is_empty()).then_some((head, rest))
+}
+
+/// 0700 のディレクトリを作る(シークレットを置くので、他人に列挙させない)。
+fn make_private_dir(dir: &std::path::Path) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::create_dir_all(dir).map_err(|e| format!("{} を作れません: {e}", dir.display()))?;
+    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
+        .map_err(|e| format!("{} の権限を設定できません: {e}", dir.display()))
 }
 
 /// 左辺が**環境変数の名前**か。妥当な名前(英数字と `_`、先頭は数字でない)のときだけ

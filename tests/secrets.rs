@@ -1118,6 +1118,78 @@ fn secret_fileは参照の値をファイルに書きパスを環境変数に入
 }
 
 #[test]
+fn secret_fileの名前スラッシュ形はディレクトリを環境変数に入れる() {
+    // GLAB_CONFIG_DIR のように「設定ディレクトリを環境変数で指せ」と要求する
+    // ツール向け(SPEC §10.4)。
+    let sb = Sandbox::new("flag-file-envdir");
+    let cp = sb.show_command();
+    let vault = sb.fake_vault();
+    sb.write_file(
+        "c.tpl",
+        "token: {{ with secret \"users/me/gitlab\" }}{{ .Data.data.token }}{{ end }}\n",
+    );
+
+    // sh がディレクトリ変数を展開して中のファイルを読めること = 実際の使われ方
+    let out = sb.haj(
+        &cp,
+        &[
+            "--secret-file",
+            "GLAB_CONFIG_DIR/config.yml=c.tpl",
+            "sh",
+            "--",
+            "cat",
+            "$GLAB_CONFIG_DIR/config.yml",
+        ],
+        &[
+            ("HAJ_VAULT_CMD", vault.to_str().unwrap()),
+            ("XDG_RUNTIME_DIR", sb.dir.to_str().unwrap()),
+        ],
+    );
+    assert!(out.status.success(), "stderr: {}", stderr(&out));
+    assert_eq!(stdout(&out), "token: s3cr3t\n");
+
+    // 変数の中身はディレクトリで、名前で終わる
+    let out = sb.haj(
+        &cp,
+        &[
+            "--secret-file",
+            "GLAB_CONFIG_DIR/config.yml=c.tpl",
+            "sh",
+            "--",
+            "printf",
+            "%s",
+            "$GLAB_CONFIG_DIR",
+        ],
+        &[
+            ("HAJ_VAULT_CMD", vault.to_str().unwrap()),
+            ("XDG_RUNTIME_DIR", sb.dir.to_str().unwrap()),
+        ],
+    );
+    let dir = stdout(&out);
+    assert!(
+        dir.ends_with("/GLAB_CONFIG_DIR"),
+        "ディレクトリでない: {dir}"
+    );
+
+    // 小文字が混ざる先頭セグメントは相対パスのまま(奪わない)
+    fs::create_dir_all(sb.dir.join("outdir")).unwrap();
+    let out2 = sb.haj(
+        &cp,
+        &[
+            "--secret-file",
+            "outdir/config.yml=c.tpl",
+            "sh",
+            "--",
+            "cat",
+            "outdir/config.yml",
+        ],
+        &[("HAJ_VAULT_CMD", vault.to_str().unwrap())],
+    );
+    assert!(out2.status.success(), "stderr: {}", stderr(&out2));
+    assert_eq!(stdout(&out2), "token: s3cr3t\n");
+}
+
+#[test]
 fn secret_fileはパス指定ならそこに0600で書く() {
     let sb = Sandbox::new("sf-path");
     let vault = sb.fake_vault();

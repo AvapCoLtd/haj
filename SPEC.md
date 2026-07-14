@@ -784,17 +784,25 @@ GCP のサービスアカウント JSON、`.npmrc` など)。
 | 左辺 | 書き先 |
 |---|---|
 | **名前**(環境変数として妥当なもの。`KEY` `KUBECONFIG` など) | **一時ファイル**に書き、そのパスを**環境変数 `<名前>`** に入れる |
-| **パス**(それ以外。`config.ini` `~/.npmrc` `./out` など) | そのパスに書く |
+| **名前/相対パス**(先頭が大文字の名前。`GLAB_CONFIG_DIR/config.yml`) | 一時**ディレクトリ**の中に書き、ディレクトリのパスを**環境変数 `<名前>`** に入れる |
+| **パス**(それ以外。`config.ini` `~/.npmrc` `./out` など) | そのパスに書く(親ディレクトリは作らない) |
 
 ```sh
 haj --secret-file KEY=vault://secret/data/ssh/id_rsa sh 'ssh -i "$KEY" host'
 haj --secret-file KUBECONFIG=vault://secret/data/k8s/config exec kubectl get pods
 haj --secret-file ~/.npmrc=vault://secret/data/npm/rc exec npm publish
 haj --secret-file config.ini=config.ini.tpl app run     # テンプレート描画
+haj --secret-file GLAB_CONFIG_DIR/config.yml=config.yml.tpl exec glab mr list
 ```
 
 左辺が名前のとき、環境変数名は**ツールが要求するものをそのまま書けばよい**
 (`KUBECONFIG` / `GOOGLE_APPLICATION_CREDENTIALS` など)。
+
+左辺が `<大文字の名前>/<相対パス>`(`GLAB_CONFIG_DIR/config.yml`)なら、一時
+**ディレクトリ**の中の相対パスに書き、ディレクトリのパスを環境変数に入れる —
+「設定ディレクトリを環境変数で指せ」と要求するツール(glab など)にそのまま嵌まる。
+複数のファイルを同じ名前で指定すれば同じディレクトリに並ぶ。先頭セグメントに
+小文字が混ざるものは従来どおり相対パスとして扱う(`out/config.ini` を奪わない)。
 
 - 一時ファイルは `$XDG_RUNTIME_DIR`(無ければ `$TMPDIR`)の mode 0700 ディレクトリに
   mode 0600 で作る。**cwd には決して書かない** — リポジトリに置かれて commit される
