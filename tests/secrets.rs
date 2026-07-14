@@ -241,7 +241,11 @@ fn vault_templateの正準形以外は中止する() {
         &[],
     );
     assert_eq!(out.status.code(), Some(1));
-    assert!(stderr(&out).contains("正準形"), "stderr: {}", stderr(&out));
+    assert!(
+        stderr(&out).contains("解釈できません"),
+        "stderr: {}",
+        stderr(&out)
+    );
     assert!(!sb.dir.join("ran").exists(), "本体が実行されてしまった");
 }
 
@@ -620,6 +624,61 @@ fn secret_fileはテンプレートを描画して0600で書く() {
         .permissions()
         .mode();
     assert_eq!(mode & 0o777, 0o600, "mode が 0600 ではない: {mode:o}");
+}
+
+#[test]
+fn vault_agentの実テンプレートを描画できる() {
+    // 空白制御 ({{- -}})、ブロック内の地の文、複数フィールド。
+    // vault-agent で使っているテンプレートがそのまま動くこと(Issue #3 の約束)。
+    let sb = Sandbox::new("flag-file-agent");
+    let cp = sb.mark_command();
+    let vault = sb.fake_vault();
+    sb.write_file(
+        "config.yml.tpl",
+        "hosts:\n  example.test:\n    token: {{ with secret \"users/me/gitlab\" -}}\n      {{ .Data.data.token }}\n    {{- end }}\n    user: {{ with secret \"users/me/gitlab\" }}u={{ .Data.data.user }} t={{ .Data.data.token }}{{ end }}\n",
+    );
+
+    let out = sb.haj(
+        &cp,
+        &["--secret-file", "config.yml=config.yml.tpl", "mark"],
+        &[("HAJ_VAULT_CMD", vault.to_str().unwrap())],
+    );
+    assert!(out.status.success(), "stderr: {}", stderr(&out));
+    let rendered = fs::read_to_string(sb.dir.join("config.yml")).unwrap();
+    assert_eq!(
+        rendered,
+        "hosts:\n  example.test:\n    token: s3cr3t\n    user: u=s3cr3t t=s3cr3t\n"
+    );
+}
+
+#[test]
+fn secret_fileのテンプレートパスと環境ファイルのチルダは展開される() {
+    let sb = Sandbox::new("flag-tilde");
+    let cp = sb.mark_command();
+    let vault = sb.fake_vault();
+    // HOME = sb.dir なので ~/t.tpl はサンドボックス内
+    sb.write_file(
+        "t.tpl",
+        "x = {{ with secret \"secret/data/app\" }}{{ .Data.data.f }}{{ end }}\n",
+    );
+    sb.write_file("vars.env", "TILDE_OK = yes\n");
+
+    let out = sb.haj(
+        &cp,
+        &[
+            "--secret-file",
+            "out.ini=~/t.tpl",
+            "--env-file",
+            "~/vars.env",
+            "mark",
+        ],
+        &[("HAJ_VAULT_CMD", vault.to_str().unwrap())],
+    );
+    assert!(out.status.success(), "stderr: {}", stderr(&out));
+    assert_eq!(
+        fs::read_to_string(sb.dir.join("out.ini")).unwrap(),
+        "x = s3cr3t\n"
+    );
 }
 
 #[test]
