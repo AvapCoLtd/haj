@@ -6,6 +6,7 @@
 //!
 //! 仕様は SPEC.md を参照。
 
+mod builtin;
 mod cache;
 mod contract;
 mod discovery;
@@ -61,6 +62,16 @@ fn main() {
                 );
             }
             c.save();
+            // 組み込みも出す。どこにいても使えるのだから、一覧から漏らしてはいけない。
+            // パスは無いので "(組み込み)" と書く。
+            for b in builtin::ALL {
+                println!(
+                    "{}\t(組み込み)\t{}\t{}",
+                    b.name,
+                    project::Origin::Core.label(),
+                    b.describe
+                );
+            }
             std::process::exit(0);
         }
         // どの定義が勝っているかを見る。探索順が絡む以上、これが無いと調べようがない。
@@ -167,8 +178,9 @@ fn which(args: &[String]) -> ! {
 /// ヘルプを書き足す必要がない、というのがこの設計の主眼。
 fn print_help(topic: Option<&str>) {
     if let Some(topic) = topic {
-        if topic == "selfupgrade" {
-            selfupgrade::help();
+        // 組み込みは探索の対象ではないので、先に見る
+        if let Some(h) = builtin::long_help(topic) {
+            println!("{h}");
             return;
         }
         let Some(cmd) = discovery::resolve(topic) else {
@@ -199,12 +211,20 @@ fn print_help(topic: Option<&str>) {
 
     let mut cache = DescribeCache::load();
     let cmds = discovery::list();
+
+    // 名前の桁幅は、探索で見つかったものと組み込みで揃える(2つの表がズレると読みにくい)
+    let width = cmds
+        .iter()
+        .map(|c| c.name.len())
+        .chain(builtin::ALL.iter().map(|b| b.name.len()))
+        .max()
+        .unwrap_or(8);
+
     if cmds.is_empty() {
-        println!("\nコマンドが1つも見つかりません。");
+        println!("\nこのプロジェクトのコマンドはありません。");
         println!("  探索先: {}", dirs_hint());
     } else {
         println!("\n hajコマンド (haj help <名前> で詳細):");
-        let width = cmds.iter().map(|c| c.name.len()).max().unwrap_or(0).max(8);
         let dwidth = cmds
             .iter()
             .map(|c| describe(&mut cache, c).unwrap_or_default().chars().count())
@@ -225,6 +245,14 @@ fn print_help(topic: Option<&str>) {
         }
     }
     cache.save();
+
+    // 組み込みはどこにいても使える。探索されないからといって一覧から漏らすと、
+    // 「haj help の一覧が実態と一致する」という約束が嘘になる。
+    // ただしプロジェクトのコマンドとは性質が違うので、節を分けて出す。
+    println!("\n haj自身 (どのプロジェクトでも使える):");
+    for b in builtin::ALL {
+        println!("   {:width$}  {}", b.name, b.describe, width = width);
+    }
 
     if let Some(footer) = contract::fragment("footer") {
         print!("{footer}");
@@ -283,13 +311,34 @@ fn dirs_hint() -> String {
 fn complete(args: &[String]) {
     let Some((name, words)) = args.split_first() else {
         let mut cache = DescribeCache::load();
-        for cmd in discovery::list() {
-            let d = describe(&mut cache, &cmd).unwrap_or_default();
-            println!("{}\t{}", cmd.name, d);
-        }
+        let mut rows: Vec<(String, String)> = discovery::list()
+            .into_iter()
+            .map(|cmd| {
+                let d = describe(&mut cache, &cmd).unwrap_or_default();
+                (cmd.name, d)
+            })
+            .collect();
         cache.save();
+        // 組み込みも補完に出す。どこにいても打てるのだから、TABで出ないのはおかしい。
+        rows.extend(
+            builtin::ALL
+                .iter()
+                .map(|b| (b.name.to_string(), b.describe.to_string())),
+        );
+        rows.sort();
+        for (name, desc) in rows {
+            println!("{name}\t{desc}");
+        }
         return;
     };
+
+    // 組み込みは探索の対象ではないので、先に見る
+    if builtin::find(name).is_some() {
+        for c in builtin::complete(name, words) {
+            println!("{c}");
+        }
+        return;
+    }
 
     // 未知のコマンドなら候補なし。エラーにはしない(補完中に赤い文字を出さない)。
     let Some(cmd) = discovery::resolve(name) else {

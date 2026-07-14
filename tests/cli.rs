@@ -450,6 +450,135 @@ fn プロジェクト名は既定でディレクトリ名になる() {
     );
 }
 
+// --- コア組み込みコマンド ------------------------------------------------------
+//
+// help / commands / which / selfupgrade はどこにいても使える。探索の対象では
+// ないからといって一覧や補完から漏らすと、「haj help の一覧が実態と一致する」
+// という haj の約束そのものが嘘になる。
+
+#[test]
+fn 組み込みコマンドは常に一覧に出る() {
+    let sb = Sandbox::new("builtin-list");
+    sb.command(
+        "sys",
+        "mig",
+        &conforming("マイグレーション", "", "", "true"),
+    );
+
+    let cp = sb.path("sys/commands");
+    let out = stdout(&sb.haj(&sb.dir, cp.to_str().unwrap(), &["help"]));
+
+    for b in ["help", "commands", "which", "selfupgrade"] {
+        assert!(out.contains(b), "組み込み {b} が一覧に無い:\n{out}");
+    }
+    assert!(out.contains("mig"), "探索されたコマンドも出るべき:\n{out}");
+}
+
+#[test]
+fn プロジェクトが空でも組み込みは出る() {
+    let sb = Sandbox::new("builtin-empty");
+    // コマンドが1つも無い状態
+    let cp = sb.path("none");
+    let out = stdout(&sb.haj(&sb.dir, cp.to_str().unwrap(), &["help"]));
+
+    assert!(
+        out.contains("selfupgrade"),
+        "コマンドが無くても組み込みは使えるのだから出すべき:\n{out}"
+    );
+}
+
+#[test]
+fn 組み込みコマンドは補完に出る() {
+    let sb = Sandbox::new("builtin-complete");
+    sb.command(
+        "sys",
+        "mig",
+        &conforming("マイグレーション", "", "", "true"),
+    );
+
+    let cp = sb.path("sys/commands");
+    let cp = cp.to_str().unwrap();
+
+    let out = stdout(&sb.haj(&sb.dir, cp, &["__complete"]));
+    assert!(out.contains("selfupgrade"), "TABで組み込みが出ない:\n{out}");
+    assert!(out.contains("which"), "{out}");
+    assert!(out.contains("mig"), "探索されたコマンドも出るべき:\n{out}");
+
+    // haj selfupgrade <TAB> → --check
+    let sub = stdout(&sb.haj(&sb.dir, cp, &["__complete", "selfupgrade"]));
+    assert!(sub.contains("--check"), "selfupgradeの補完が無い:\n{sub}");
+
+    // haj which <TAB> → --all とコマンド名
+    let w = stdout(&sb.haj(&sb.dir, cp, &["__complete", "which"]));
+    assert!(w.contains("--all"), "{w}");
+    assert!(w.contains("mig"), "whichの引数はコマンド名であるべき:\n{w}");
+}
+
+#[test]
+fn 組み込みコマンドにも使い方がある() {
+    let sb = Sandbox::new("builtin-help");
+    let cp = sb.path("none");
+    let cp = cp.to_str().unwrap();
+
+    for b in ["help", "commands", "which", "selfupgrade"] {
+        let out = stdout(&sb.haj(&sb.dir, cp, &["help", b]));
+        assert!(
+            out.contains(&format!("haj {b}")),
+            "haj help {b} が説明を返さない:\n{out}"
+        );
+    }
+}
+
+#[test]
+fn 機械可読の一覧にも組み込みが入る() {
+    let sb = Sandbox::new("builtin-commands");
+    sb.command(
+        "sys",
+        "mig",
+        &conforming("マイグレーション", "", "", "true"),
+    );
+
+    let cp = sb.path("sys/commands");
+    let out = stdout(&sb.haj(&sb.dir, cp.to_str().unwrap(), &["commands"]));
+
+    let selfup: Vec<&str> = out
+        .lines()
+        .filter(|l| l.starts_with("selfupgrade\t"))
+        .collect();
+    assert_eq!(selfup.len(), 1, "commands に selfupgrade が無い:\n{out}");
+    assert!(
+        selfup[0].contains("[haj]"),
+        "出自ラベルが無い:\n{}",
+        selfup[0]
+    );
+}
+
+#[test]
+fn 組み込みと同名のコマンドは置いても無視される() {
+    let sb = Sandbox::new("builtin-shadow");
+    // selfupgrade を乗っ取ろうとするコマンド
+    sb.command(
+        "sys",
+        "selfupgrade",
+        &conforming("乗っ取り", "", "", "echo HIJACKED"),
+    );
+
+    let cp = sb.path("sys/commands");
+    let out = stdout(&sb.haj(&sb.dir, cp.to_str().unwrap(), &["commands"]));
+
+    // 一覧に出るのは組み込みの方だけ(探索側は予約語として弾かれる)
+    let rows: Vec<&str> = out
+        .lines()
+        .filter(|l| l.starts_with("selfupgrade\t"))
+        .collect();
+    assert_eq!(rows.len(), 1, "予約語が二重に出ている:\n{out}");
+    assert!(
+        rows[0].contains("[haj]"),
+        "組み込みが奪われた:\n{}",
+        rows[0]
+    );
+}
+
 #[test]
 fn 対象プロジェクトを環境変数で渡す() {
     let sb = Sandbox::new("projenv");

@@ -82,6 +82,9 @@ pub enum Origin {
     System,
     /// PATH 上の `haj-<名前>`
     Path,
+    /// コア組み込み(`help` / `commands` / `which` / `selfupgrade`)。
+    /// 探索されないが、どこにいても使えるので一覧には出す。
+    Core,
 }
 
 impl Origin {
@@ -92,6 +95,7 @@ impl Origin {
             Origin::User => "[個人]".to_string(),
             Origin::System => "[共通]".to_string(),
             Origin::Path => "[PATH]".to_string(),
+            Origin::Core => "[haj]".to_string(),
         }
     }
 }

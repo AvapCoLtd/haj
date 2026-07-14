@@ -8,7 +8,6 @@
 //! exec がコアの本業、という設計に沿っている。
 
 use std::fs;
-use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -316,10 +315,8 @@ impl Drop for TempDir {
 }
 
 /// `haj help selfupgrade` 用。コア組み込みなので --haj-help は持てない。
-pub fn help() {
-    let mut out = std::io::stdout();
-    let _ = writeln!(
-        out,
+pub fn long_help() -> String {
+    format!(
         r#"haj selfupgrade [<版>] [--check] — コア自身を更新する
 
   haj selfupgrade            最新リリースを調べ、今と違えば置き換える
@@ -338,5 +335,5 @@ pub fn help() {
 置き換えは、現バイナリと同じディレクトリに書いてから rename する(原子的で、
 実行中のプロセスに影響しない)。書けない場所なら sudo での再実行を提案して終わる。
 コア自身は昇格しない。"#
-    );
+    )
 }

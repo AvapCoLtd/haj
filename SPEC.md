@@ -335,11 +335,37 @@ haj __complete <名前> [語...]       → そのコマンドの --haj-complete 
 |---|---|
 | `haj` / `haj help` | ヘルプ(header + 自動生成の一覧 + footer) |
 | `haj help <名前>` | そのコマンドの `--haj-help` |
-| `haj commands` | `名前\tパス\t説明` を機械可読で列挙 |
-| `haj which <名前>` | 探索で勝っている実行ファイルのパス |
+| `haj commands` | `名前\tパス\t出自\t説明` を機械可読で列挙 |
+| `haj which [--all] <名前>` | 探索で勝っている実行ファイルのパス(`--all` で隠れているものも) |
 | `haj selfupgrade` | コア自身の更新(§9.1) |
 | `haj --version` | コアの版 |
 | `haj __complete ...` | 補完プロトコル(人間向けではない) |
+
+### 9.0 組み込みは常に見えていなければならない
+
+**組み込みコマンドは探索の対象ではないが、`haj help` の一覧にも補完にも `haj commands` にも
+出す。** どこにいても使えるものを一覧から漏らせば、「`haj help` の一覧が実態と一致する」
+という haj の約束そのものが嘘になる。
+
+一覧では、プロジェクトのコマンドとは節を分けて出す(性質が違うため)。
+
+```
+ hajコマンド (haj help <名前> で詳細):
+   mig          DBマイグレーション   [example-app]
+   bao-login    Vaultにログイン      [共通]
+
+ haj自身 (どのプロジェクトでも使える):
+   help         使い方を表示する (haj help <名前> で個別)
+   commands     コマンド一覧を機械可読で出す
+   which        どの定義が効いているかを見る (--all で隠れているものも)
+   selfupgrade  haj自身を更新する
+```
+
+`haj commands` では出自ラベル `[haj]`、パスの代わりに `(組み込み)` を出す。
+
+組み込みも `haj help <名前>` に答え、補完候補を返す(`haj selfupgrade ⇥` → `--check`、
+`haj which ⇥` → `--all` とコマンド名)。実装がプロセス起動ではないだけで、**サブコマンドと
+同じ顔をしている**。
 
 ### 9.1 `haj selfupgrade`
 
