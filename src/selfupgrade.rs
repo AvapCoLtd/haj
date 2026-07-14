@@ -30,7 +30,7 @@ impl Config {
         let cfg = crate::config::Config::load();
 
         let token = cfg
-            .get_opt("HAJ_TOKEN", "token")
+            .get_opt("HAJ_TOKEN", "selfupgrade.token")
             .map(|(v, _)| v)
             .ok_or_else(|| {
                 let where_to = cfg
@@ -42,8 +42,8 @@ impl Config {
                     "GitLabのトークンがありません。このリポジトリはprivateなので、\
                      リリースの取得に必要です。\n  \
                      環境変数 HAJ_TOKEN を渡すか、{where_to} に書いてください:\n    \
-                     token = glpat-xxxxxxxx\n    \
-                     token = vault://users/<名前>/gitlab-pat/gitlab.avaper.day/token  (参照でもよい)"
+                     selfupgrade.token = glpat-xxxxxxxx\n    \
+                     selfupgrade.token = vault://users/<名前>/gitlab-pat/gitlab.avaper.day/token  (参照でもよい)"
                 )
             })?;
 
@@ -55,11 +55,19 @@ impl Config {
             .unwrap_or(token);
 
         Ok(Config {
-            gitlab: cfg.get("HAJ_GITLAB", "gitlab", DEFAULT_GITLAB).0,
-            project_id: cfg
-                .get("HAJ_PROJECT_ID", "project_id", DEFAULT_PROJECT_ID)
+            gitlab: cfg
+                .get("HAJ_GITLAB", "selfupgrade.gitlab", DEFAULT_GITLAB)
                 .0,
-            target: cfg.get("HAJ_TARGET", "target", DEFAULT_TARGET).0,
+            project_id: cfg
+                .get(
+                    "HAJ_PROJECT_ID",
+                    "selfupgrade.project_id",
+                    DEFAULT_PROJECT_ID,
+                )
+                .0,
+            target: cfg
+                .get("HAJ_TARGET", "selfupgrade.target", DEFAULT_TARGET)
+                .0,
             token,
         })
     }
@@ -351,11 +359,11 @@ pub fn long_help() -> String {
 
 設定は ~/.config/haj/config に書ける(環境変数でも渡せる。haj config で実効値を確認)。
 
-  設定ファイルの鍵      環境変数           既定値
-  token               HAJ_TOKEN         (必須)
-  gitlab              HAJ_GITLAB        https://gitlab.avaper.day
-  project_id          HAJ_PROJECT_ID    788
-  target              HAJ_TARGET        x86_64-unknown-linux-musl
+  設定ファイルの鍵          環境変数           既定値
+  selfupgrade.token       HAJ_TOKEN         (必須。vault:// などの参照でもよい)
+  selfupgrade.gitlab      HAJ_GITLAB        https://gitlab.avaper.day
+  selfupgrade.project_id  HAJ_PROJECT_ID    788
+  selfupgrade.target      HAJ_TARGET        x86_64-unknown-linux-musl
 
 置き換えは、現バイナリと同じディレクトリに書いてから rename する(原子的で、
 実行中のプロセスに影響しない)。書けない場所なら sudo での再実行を提案して終わる。

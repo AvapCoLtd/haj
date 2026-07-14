@@ -260,7 +260,7 @@ fn write_secret_file(path: &str, content: &str) -> Result<(), String> {
 /// `vault kv get` で1フィールドを取る。パスの2セグメント目が `data` なら
 /// KV v2 の API パス(template の書き方)とみなし、mount と相対パスに読み替える。
 fn vault_fetch(path: &[&str], field: &str) -> Result<String, String> {
-    let cli = cli_for("HAJ_VAULT_CMD", "vault_cmd", "bao");
+    let cli = cli_for("HAJ_VAULT_CMD", "secrets.vault_cmd", "bao");
     ensure_vault_login(&cli)?;
     let mut proc = vault_proc(&cli);
     proc.args(["kv", "get", &format!("-field={field}")]);
@@ -282,8 +282,11 @@ fn vault_proc(cli: &str) -> Proc {
         .iter()
         .any(|k| env::var(k).map(|v| !v.is_empty()).unwrap_or(false));
     if !has_addr {
-        let (addr, _) =
-            crate::config::Config::load().get("VAULT_ADDR", "vault_addr", DEFAULT_VAULT_ADDR);
+        let (addr, _) = crate::config::Config::load().get(
+            "VAULT_ADDR",
+            "secrets.vault_addr",
+            DEFAULT_VAULT_ADDR,
+        );
         proc.env("VAULT_ADDR", &addr).env("BAO_ADDR", &addr);
     }
     proc
@@ -316,7 +319,7 @@ fn ensure_vault_login(cli: &str) -> Result<(), String> {
             }
             let (args, _) = crate::config::Config::load().get(
                 "HAJ_VAULT_LOGIN",
-                "vault_login",
+                "secrets.vault_login",
                 DEFAULT_VAULT_LOGIN,
             );
             if args == "off" {
@@ -345,7 +348,7 @@ fn ensure_vault_login(cli: &str) -> Result<(), String> {
 /// op は書式を解釈せず、値ごと `op inject` に渡す。埋め込みの展開も
 /// 意味論もすべて inject に従う。
 fn op_inject(value: &str) -> Result<String, String> {
-    let cli = cli_for("HAJ_OP_CMD", "op_cmd", "op");
+    let cli = cli_for("HAJ_OP_CMD", "secrets.op_cmd", "op");
     let mut proc = Proc::new(&cli);
     proc.arg("inject");
     run(proc, &cli, Some(value))

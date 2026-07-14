@@ -618,7 +618,7 @@ fn 設定ファイルの値が既定値を上書きする() {
     let sb = Sandbox::new("cfg-file");
     sb.write(
         "xdgconf/haj/config",
-        "hook_timeout_ms = 1234\ngitlab = https://example.test\n",
+        "hook_timeout_ms = 1234\nselfupgrade.gitlab = https://example.test\n",
     );
 
     let out = Command::new(env!("CARGO_BIN_EXE_haj"))
@@ -641,7 +641,10 @@ fn 設定ファイルの値が既定値を上書きする() {
 #[test]
 fn 環境変数は設定ファイルより強い() {
     let sb = Sandbox::new("cfg-env");
-    sb.write("xdgconf/haj/config", "gitlab = https://from-file.test\n");
+    sb.write(
+        "xdgconf/haj/config",
+        "selfupgrade.gitlab = https://from-file.test\n",
+    );
 
     let out = Command::new(env!("CARGO_BIN_EXE_haj"))
         .args(["config"])
@@ -668,7 +671,10 @@ fn 環境変数は設定ファイルより強い() {
 #[test]
 fn トークンの値は表示しない() {
     let sb = Sandbox::new("cfg-token");
-    sb.write("xdgconf/haj/config", "token = glpat-SUPERSECRET\n");
+    sb.write(
+        "xdgconf/haj/config",
+        "selfupgrade.token = glpat-SUPERSECRET\n",
+    );
 
     let out = Command::new(env!("CARGO_BIN_EXE_haj"))
         .args(["config"])
@@ -694,7 +700,7 @@ fn 設定ファイルのコメントと引用符を扱える() {
     let sb = Sandbox::new("cfg-parse");
     sb.write(
         "xdgconf/haj/config",
-        "# これはコメント\ngitlab = \"https://quoted.test\"   # 行末コメント\n\n",
+        "# これはコメント\nselfupgrade.gitlab = \"https://quoted.test\"   # 行末コメント\n\n",
     );
 
     let out = Command::new(env!("CARGO_BIN_EXE_haj"))
