@@ -256,6 +256,12 @@ haj tree list
 haj tree remove haj-tools
 ```
 
+イメージに焼くなら `--global`(`/usr/local/share/haj/trees` に入る):
+
+```dockerfile
+RUN haj tree install --global https://github.com/you/haj-tools
+```
+
 リポジトリの形は2つ(`.haj/` があればそれ、無ければルートがツリー):
 ルート直下に `config` + `commands/` + `docs/` を置く配布専用の形と、
 `.haj/` を持つ普通の haj プロジェクトをそのまま入れる形。`config` の

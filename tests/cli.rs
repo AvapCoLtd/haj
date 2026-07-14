@@ -1141,6 +1141,53 @@ fn haj形式のリポジトリとconfigの名前とエイリアス配布() {
 }
 
 #[test]
+fn グローバルにもインストールできる() {
+    let sb = Sandbox::new("tree-global");
+    let cp = sb.path("nonexistent");
+
+    let remote = git_remote(&sb, "remote/shared");
+    sb.command(
+        "remote/shared",
+        "ping",
+        &conforming("疎通", "", "", "echo PONG"),
+    );
+    commit_all(&remote, "ping");
+
+    // XDG_DATA_DIRS をサンドボックスに向けて --global で入れる
+    let run = |args: &[&str]| -> Output {
+        Command::new(env!("CARGO_BIN_EXE_haj"))
+            .args(args)
+            .current_dir(&sb.dir)
+            .env("HAJ_COMMAND_PATH", &cp)
+            .env("HAJ_NO_CACHE", "1")
+            .env("HOME", &sb.dir)
+            .env("XDG_DATA_DIRS", sb.path("xdgdata"))
+            .output()
+            .unwrap()
+    };
+    let out = run(&["tree", "install", "--global", remote.to_str().unwrap()]);
+    assert!(
+        out.status.success(),
+        "global install 失敗: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        sb.path("xdgdata/haj/trees/shared").is_dir(),
+        "XDG_DATA_DIRS 先に入っていない"
+    );
+
+    // 探索に乗る(個人の trees には入っていない)
+    let out = run(&["ping"]);
+    assert_eq!(
+        stdout(&out).trim(),
+        "PONG",
+        "グローバルツリーが探索されない"
+    );
+    let list = stdout(&run(&["tree", "list"]));
+    assert!(list.contains("shared"), "list に出ない:\n{list}");
+}
+
+#[test]
 fn 空のリポジトリはツリーとして認めない() {
     let sb = Sandbox::new("tree-reject");
     let cp = sb.path("nonexistent");

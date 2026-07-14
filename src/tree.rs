@@ -11,12 +11,12 @@ use std::path::{Path, PathBuf};
 use std::process::Command as Proc;
 
 const USAGE: &str = "\
-使い方: haj tree install <gitのURL>[@<ref>] [--name <名前>]
+使い方: haj tree install <gitのURL>[@<ref>] [--name <名前>] [--global]
         haj tree update [<名前>]
         haj tree list
         haj tree remove <名前>";
 
-/// インストール先: `$XDG_DATA_HOME/haj/trees`(既定 `~/.local/share/haj/trees`)。
+/// 個人のインストール先: `$XDG_DATA_HOME/haj/trees`(既定 `~/.local/share/haj/trees`)。
 /// 設定でも環境変数でもなくデータなので、XDG data に置く。
 pub fn trees_dir() -> Option<PathBuf> {
     std::env::var_os("XDG_DATA_HOME")
@@ -24,6 +24,22 @@ pub fn trees_dir() -> Option<PathBuf> {
         .filter(|p| p.is_absolute())
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local").join("share")))
         .map(|base| base.join("haj").join("trees"))
+}
+
+/// システム共通のインストール先: `$XDG_DATA_DIRS` の各エントリ(既定
+/// `/usr/local/share:/usr/share`)の `haj/trees`。`--global` は先頭に入れる。
+/// イメージに焼くとき(Dockerfile の RUN haj tree install --global ...)のためにある。
+pub fn global_trees_dirs() -> Vec<PathBuf> {
+    let dirs = std::env::var("XDG_DATA_DIRS").unwrap_or_default();
+    let dirs = if dirs.is_empty() {
+        "/usr/local/share:/usr/share"
+    } else {
+        &dirs
+    };
+    dirs.split(':')
+        .filter(|d| !d.is_empty())
+        .map(|d| PathBuf::from(d).join("haj").join("trees"))
+        .collect()
 }
 
 /// ツリーの根: `<dir>/.haj` があればそれ、無ければ `<dir>` 自体(SPEC §9.5)。
@@ -39,19 +55,30 @@ pub fn tree_root(dir: &Path) -> PathBuf {
 }
 
 /// インストール済みツリーを名前順に返す(名前 = ディレクトリ名)。
+/// 個人 > グローバルの順で見て、同名は近いスコープが勝つ(コマンド探索と同じ規律)。
 pub fn installed() -> Vec<(String, PathBuf)> {
-    let Some(base) = trees_dir() else {
-        return Vec::new();
-    };
-    let Ok(entries) = std::fs::read_dir(&base) else {
-        return Vec::new();
-    };
-    let mut v: Vec<(String, PathBuf)> = entries
-        .flatten()
-        .filter(|e| e.path().is_dir())
-        .filter_map(|e| e.file_name().into_string().ok().map(|n| (n, e.path())))
-        .filter(|(n, _)| !n.starts_with('.'))
-        .collect();
+    let mut bases: Vec<PathBuf> = Vec::new();
+    bases.extend(trees_dir());
+    bases.extend(global_trees_dirs());
+
+    let mut v: Vec<(String, PathBuf)> = Vec::new();
+    for base in bases {
+        let Ok(entries) = std::fs::read_dir(&base) else {
+            continue;
+        };
+        for e in entries.flatten() {
+            if !e.path().is_dir() {
+                continue;
+            }
+            let Ok(n) = e.file_name().into_string() else {
+                continue;
+            };
+            if n.starts_with('.') || v.iter().any(|(name, _)| *name == n) {
+                continue;
+            }
+            v.push((n, e.path()));
+        }
+    }
     v.sort();
     v
 }
@@ -69,6 +96,7 @@ pub fn run(args: &[String]) -> ! {
 fn install(args: &[String]) -> ! {
     let mut name_flag: Option<String> = None;
     let mut url_arg: Option<String> = None;
+    let mut global = false;
     let mut it = args.iter();
     while let Some(a) = it.next() {
         if a == "--name" {
@@ -76,6 +104,8 @@ fn install(args: &[String]) -> ! {
                 die(&format!("--name には値が要ります\n{USAGE}"));
             };
             name_flag = Some(n.clone());
+        } else if a == "--global" {
+            global = true;
         } else if url_arg.is_none() {
             url_arg = Some(a.clone());
         } else {
@@ -87,11 +117,27 @@ fn install(args: &[String]) -> ! {
     };
     let (url, reference) = split_ref(&url_arg);
 
-    let Some(base) = trees_dir() else {
-        die("HOME が分かりません");
+    let base = if global {
+        let Some(b) = global_trees_dirs().into_iter().next() else {
+            die("グローバルの置き場が分かりません ($XDG_DATA_DIRS)");
+        };
+        b
+    } else {
+        let Some(b) = trees_dir() else {
+            die("HOME が分かりません");
+        };
+        b
     };
     if let Err(e) = std::fs::create_dir_all(&base) {
-        die(&format!("{} を作れません: {e}", base.display()));
+        die(&format!(
+            "{} を作れません: {e}{}",
+            base.display(),
+            if global {
+                "\n  --global には書き込み権限が要ります (sudo など)"
+            } else {
+                ""
+            }
+        ));
     }
 
     // 一時ディレクトリに clone してから改名する。名前はツリーの config を読まないと

@@ -705,7 +705,7 @@ clone したディレクトリが探索の対象(§2 の順 3)になるだけで
 (探索と exec)は変わらない。
 
 ```sh
-haj tree install <gitのURL>[@<ref>] [--name <名前>]
+haj tree install <gitのURL>[@<ref>] [--name <名前>] [--global]
 haj tree update [<名前>]       # 省略で全部
 haj tree list
 haj tree remove <名前>
@@ -713,6 +713,10 @@ haj tree remove <名前>
 
 - 置き場は `$XDG_DATA_HOME/haj/trees/<名前>`(既定 `~/.local/share/haj/trees/`)。
   設定でも環境変数でもなく**データ**なので XDG data に置く
+- **`--global` はシステム共通に入れる**: `$XDG_DATA_DIRS` の先頭(既定
+  `/usr/local/share`)の `haj/trees/<名前>`。イメージに焼くとき
+  (Dockerfile の `RUN haj tree install --global ...`)のためにある。
+  探索・update・remove は個人とグローバルの両方を見て、同名は個人が勝つ
 - **状態ファイルは持たない。git のリポジトリ自体が状態**(URL は remote、版は HEAD)
 - git は CLI へ委譲する(op / bao と同じ流儀。git が無ければ実行時にそう言って止まる)
 - `@<ref>` でブランチ/タグを固定できる。`@` の後に `/` か `:` があれば URL の一部と
