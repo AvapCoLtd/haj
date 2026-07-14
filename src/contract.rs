@@ -19,12 +19,16 @@ pub const COMPLETE: &str = "--haj-complete";
 /// 上限を設けないと、壊れたサブコマンド1本(入力待ちで固まる等)が
 /// `haj help` とシェルのTAB補完を巻き添えにして固める。補完は人間が
 /// キーを押すたびに走るので、ここが詰まるのは致命的に体験が悪い。
+pub const DEFAULT_HOOK_TIMEOUT_MS: u64 = 2000;
+
 fn hook_timeout() -> Duration {
-    let ms = std::env::var("HAJ_HOOK_TIMEOUT_MS")
-        .ok()
-        .and_then(|v| v.parse::<u64>().ok())
-        .unwrap_or(2000);
-    Duration::from_millis(ms)
+    let cfg = crate::config::Config::load();
+    let (v, _) = cfg.get(
+        "HAJ_HOOK_TIMEOUT_MS",
+        "hook_timeout_ms",
+        &DEFAULT_HOOK_TIMEOUT_MS.to_string(),
+    );
+    Duration::from_millis(v.parse().unwrap_or(DEFAULT_HOOK_TIMEOUT_MS))
 }
 
 /// 規約フックを呼んで stdout を返す。答えられない/失敗/タイムアウトなら None。

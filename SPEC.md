@@ -28,11 +28,12 @@ Python でも `haj` から等しく扱われる。逆に、コアはこの契約
 | 順 | 探索先 | 用途 |
 |---|---|---|
 | 1 | カレントから上へ辿った各階層の `<dir>/.haj/commands/<名前>` | プロジェクト固有 |
-| 2 | `~/.haj/commands/<名前>` | 個人用 |
+| 2 | `~/.config/haj/commands/<名前>` | 個人用(XDG。§8.1) |
 | 3 | `$HAJ_COMMAND_PATH` の各ディレクトリ(`:` 区切り) | 全社/イメージ共通 |
 | 4 | `$PATH` 上の `haj-<名前>` | git 方式の逃げ道 |
 
-`$HAJ_COMMAND_PATH` の既定値は `/usr/local/lib/haj/commands`。
+`$HAJ_COMMAND_PATH` の既定値は `/usr/local/lib/haj/commands`(設定ファイルの
+`command_path` でも指定できる。§8)。
 
 ### 2.1 プロジェクト境界(`.haj` は壁である)
 
@@ -124,7 +125,7 @@ root = true
 - 空文字列
 - `.` または `-` で始まるもの
 - `/` を含むもの
-- **予約語**: `help`, `commands`, `which`, `selfupgrade`, `__complete`
+- **予約語**: `help`, `commands`, `which`, `config`, `selfupgrade`, `secrets`, `__complete`
 
 予約語を弾くのは、`.haj/commands/help` を置かれるとコアのヘルプが奪われ、
 「コマンド一覧を出す手段が無くなる」状態に陥りうるため。
@@ -318,14 +319,67 @@ haj __complete <名前> [語...]       → そのコマンドの --haj-complete 
 
 ---
 
-## 8. 環境変数(コアが読むもの)
+## 8. 設定
 
-| 変数 | 既定 | 意味 |
-|---|---|---|
-| `HAJ_COMMAND_PATH` | `/usr/local/lib/haj/commands` | システム共通のコマンド置き場(`:` 区切り) |
-| `HAJ_HOOK_TIMEOUT_MS` | `2000` | 規約フックのタイムアウト |
-| `HAJ_NO_CACHE` | (未設定) | `1` で説明文キャッシュを無効化 |
-| `XDG_CACHE_HOME` | `$HOME/.cache` | キャッシュの置き場所 |
+### 8.1 場所(XDG に従う)
+
+**git と同じ形**。リポジトリ側は `.haj/`(git の `.git/`)、ユーザー側は
+`~/.config/haj/`(git の `~/.config/git/config`)。
+
+| 何 | 場所 |
+|---|---|
+| ユーザー設定 | `$XDG_CONFIG_HOME/haj/config`(既定 `~/.config/haj/config`) |
+| 個人用コマンド | `$XDG_CONFIG_HOME/haj/commands/` |
+| 説明文キャッシュ | `$XDG_CACHE_HOME/haj/describe.tsv`(既定 `~/.cache/haj/`) |
+| プロジェクト設定 | `<リポジトリ>/.haj/project` |
+
+0.3.0 までの `~/.haj/commands/` も当面は読む(置いてあるコマンドが黙って消えるのが
+一番たちが悪い)。新規は `~/.config/haj/commands/` に置く。
+
+### 8.2 形式
+
+**`.haj/project` と同じ `key = value`。** `#` から行末はコメント。
+
+設定ファイルの形式が2つあると「どっちがどっちだったか」を覚える羽目になる。
+入れ子が要るような項目は無く、信頼済みツリーの一覧のような**列**は direnv 方式で
+別ファイルにすればよい。これで依存クレートをゼロに保てる(YAML/TOML はパーサが要る)。
+
+```
+# ~/.config/haj/config
+gitlab     = https://gitlab.avaper.day
+project_id = 788
+target     = x86_64-unknown-linux-musl
+token      = glpat-xxxxxxxx
+
+hook_timeout_ms = 2000
+```
+
+### 8.3 優先順位
+
+**環境変数 > 設定ファイル > 既定値。**
+
+この3段が見えないと「なぜ効かないのか」を調べる手段が無くなるので、
+**`haj config` は実効値と一緒に必ず出所を出す**(`haj which` が探索順を見せるのと
+同じ理由)。`token` は値を出さず、設定されているかと出所だけを示す。
+
+| 設定ファイルの鍵 | 環境変数 | 既定 | 意味 |
+|---|---|---|---|
+| `command_path` | `HAJ_COMMAND_PATH` | `/usr/local/lib/haj/commands` | システム共通のコマンド置き場(`:` 区切り) |
+| `hook_timeout_ms` | `HAJ_HOOK_TIMEOUT_MS` | `2000` | 規約フックのタイムアウト |
+| `token` | `HAJ_TOKEN` | (無し) | `selfupgrade` が使う GitLab トークン |
+| `gitlab` | `HAJ_GITLAB` | `https://gitlab.avaper.day` | GitLab インスタンス |
+| `project_id` | `HAJ_PROJECT_ID` | `788` | haj のプロジェクト ID |
+| `target` | `HAJ_TARGET` | `x86_64-unknown-linux-musl` | 取得するビルドのターゲット |
+
+環境変数だけのもの(設定ファイルに書けない):
+
+| 変数 | 意味 |
+|---|---|
+| `HAJ_NO_CACHE` | `1` で説明文キャッシュを無効化(デバッグ用) |
+| `XDG_CONFIG_HOME` / `XDG_CACHE_HOME` | 置き場所そのものを決めるので、設定ファイルには書けない |
+| `HAJ_SECRETS` | (未設定) | `1` でシークレット参照の展開を有効化(§10) |
+| `HAJ_OP_CMD` | `op` | op 参照の解決に使う CLI |
+| `HAJ_VAULT_CMD` | `vault` | vault 参照の解決に使う CLI(avap は `bao` に差し替える) |
 
 ---
 
@@ -337,7 +391,9 @@ haj __complete <名前> [語...]       → そのコマンドの --haj-complete 
 | `haj help <名前>` | そのコマンドの `--haj-help` |
 | `haj commands` | `名前\tパス\t出自\t説明` を機械可読で列挙 |
 | `haj which [--all] <名前>` | 探索で勝っている実行ファイルのパス(`--all` で隠れているものも) |
+| `haj config` | 設定の実効値と、その出所(§8) |
 | `haj selfupgrade` | コア自身の更新(§9.1) |
+| `haj secrets` | シークレット参照の展開対象を確認する(§10.6) |
 | `haj --version` | コアの版 |
 | `haj __complete ...` | 補完プロトコル(人間向けではない) |
 
@@ -359,6 +415,7 @@ haj __complete <名前> [語...]       → そのコマンドの --haj-complete 
    commands     コマンド一覧を機械可読で出す
    which        どの定義が効いているかを見る (--all で隠れているものも)
    selfupgrade  haj自身を更新する
+   secrets      シークレット参照の展開対象を確認する (dry-run)
 ```
 
 `haj commands` では出自ラベル `[haj]`、パスの代わりに `(組み込み)` を出す。
@@ -409,7 +466,105 @@ haj selfupgrade [<版>] [--check]
 
 ---
 
-## 10. 意図的にやらないこと
+## 10. シークレット参照(展開)
+
+サブコマンドに渡す値には、シークレットの実体ではなく**参照**を書ける。コアは exec の
+直前に参照を解決し、展開済みの値を子プロセスに渡す。リポジトリにも環境にも平文を置かず、
+haj がプロキシになる。
+
+**参照の書式は発明しない。** 1Password は `op inject` の書式、Vault は vault-agent の
+template で使う展開式を、それぞれ**そのまま**受け付ける。既存のテンプレートや
+ドキュメントからコピペで移せることを設計要件とする。
+
+### 10.1 有効化(オプトイン)
+
+展開は **`HAJ_SECRETS=1` のときだけ**行われる。既定では何もしない(参照はただの文字列
+としてそのまま渡る)。clone した直後のリポジトリで勝手に金庫が開く、という事故を防ぐため、
+展開は常に明示のオプトイン。CI などの管理された環境ではジョブの環境変数に置けばよい。
+
+プロジェクトのツリー由来の値(`.haj/env`)には、これに**加えて**「許可したツリーだけ」の
+ゲートがかかる(env 注入の仕組みと一緒に入る。まだ無い)。
+
+### 10.2 展開の対象
+
+1. haj が受け取った**環境変数の値**(すべての変数を走査する)
+2. **コマンドライン引数**(exec に渡す argv)
+3. `.haj/env` 等の専用ファイルの値 — env 注入が入り次第、同じ規則で展開される
+
+規約フック(`--haj-describe` / `--haj-complete` / `--haj-help`)には**展開しない**。
+TAB を押すたびに金庫へ問い合わせが飛ぶのは論外(タッチ認証で固まる)。展開は
+「本体を実行する」ときだけ。
+
+### 10.3 参照の書式
+
+| 参照 | 意味 |
+|---|---|
+| `op://<金庫>/<アイテム>/[<セクション>/]<フィールド>` | 1Password。**`op inject` に丸ごと委譲**し、書式も意味論も inject に従う(値に**埋め込まれた**参照も展開される) |
+| `{{ with secret "<パス>" }}{{ .Data.data.<フィールド> }}{{ end }}` | Vault。vault-agent template の正準形。KV v2 の `/data/` 入りパスをそのまま書く |
+| `vault://<パス>/<フィールド>` | 上の短縮形。**最後のセグメントがフィールド**、残りがパス(パスの規約は template 形と同じ) |
+| `env://VAR` | 環境変数 VAR の値。再帰はしない(1段だけ) |
+| `file://<パス>` | ファイルの中身。docker secrets / systemd credentials との接続に |
+
+op 以外は、**値全体が参照のときだけ**展開する(`vault://` 等で始まる、または `{{` で
+始まり `}}` で終わる)。文字列中への埋め込みは解釈しない。接続文字列の組み立ては
+サブコマンド側の責務。
+
+```
+DB_PASSWORD=vault://avap/data/hoge/fuga                               → 展開される
+OTP={{ with secret "avap/data/hoge" }}{{ .Data.data.fuga }}{{ end }}  → 展開される(上と等価)
+TOKEN=op://Infra/ci/token                                             → op inject が展開
+DB_URL=postgres://u:vault://a/b/c@host/db                             → 展開されない(ただの文字列)
+```
+
+vault の template 形は正準形**のみ**解釈する。`printf` 等を含む任意の式が来たら
+「正準形のみ対応」と言って中止する。
+
+### 10.4 解決
+
+依存クレートは増やさない。op / vault は CLI を子プロセスとして呼び、env / file は
+stdlib だけで解決する。
+
+| 参照 | 解決方法 |
+|---|---|
+| op | `$HAJ_OP_CMD inject`(既定 `op`)に値を stdin で渡し、stdout を採る |
+| vault | `$HAJ_VAULT_CMD kv get -field=<フィールド> [-mount=<マウント>] <パス>`(既定 `vault`)。パスの2セグメント目が `data` なら KV v2 の API パスとみなし、`-mount=<先頭>` と相対パスに読み替える |
+
+- **タイムアウトは設けない。** op のタッチ認証など、人を待つ場面が正当にある。
+  規約フックの 2 秒とは別物。
+- 展開結果の末尾の改行 1 つは落とす(CLI や credential ファイルが付けるもの)。
+- **キャッシュしない。** 毎回聞く。セッション管理は各 CLI の仕事。
+
+### 10.5 失敗したら止まる
+
+解決に失敗した(CLI が無い・非 0 で終わった・参照の書式が壊れている・変数やファイルが
+無い)ら、**本体を実行せずに exit 1**。未解決の参照文字列が DB パスワードとして
+そのまま使われ、分かりにくく壊れる事故を防ぐ(fail-fast)。
+
+### 10.6 `haj secrets`(dry-run)
+
+何が展開対象なのかを、**解決せずに**確かめる。
+
+```
+$ haj secrets
+HAJ_SECRETS=1 (展開は有効)
+
+ 環境変数:
+   DB_PASSWORD  vault://avap/data/hoge/fuga
+   OP_TOKEN     op://Infra/ci/token
+```
+
+参照の**対象**(パス)は出すが、**値**は解決しない。金庫に問い合わせない。
+
+### 10.7 注意(仕様ではなく性質)
+
+- argv に展開したシークレットは `ps` / `/proc/*/cmdline` から見える。**シークレットは
+  環境変数で渡すこと**。argv 展開は「参照を引数で受けたい」場面のためにあるが、
+  実体を argv に晒す危険は使う側が負う。
+- 展開後の値は子プロセスの `/proc/<pid>/environ` に見える(環境変数渡しの本質的な限界)。
+
+---
+
+## 11. 意図的にやらないこと
 
 - **タスクを宣言型ファイル(`haj.toml` の `run = "..."`)で書けるようにしない。**
   分岐や冪等性判定を含む現実のタスクは宣言型に収まらず、「シェルスクリプトを

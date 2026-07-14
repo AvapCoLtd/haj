@@ -48,22 +48,15 @@ impl Project {
         };
 
         // `.haj/project` は `key = value` を並べただけの素朴な形式。
-        // TOMLパーサを持ち込むほどの内容ではないし、依存を増やしたくない。
+        // ユーザー設定(~/.config/haj/config)と**同じ**パーサを使う。
+        // 設定ファイルの形式が2つあると「どっちがどっちだったか」を覚える羽目になる。
         if let Ok(content) = fs::read_to_string(haj.join("project")) {
-            for line in content.lines() {
-                let line = line.trim();
-                if line.is_empty() || line.starts_with('#') {
-                    continue;
-                }
-                let Some((k, v)) = line.split_once('=') else {
-                    continue;
-                };
-                let v = v.trim().trim_matches('"');
-                match k.trim() {
-                    "name" if !v.is_empty() => p.name = v.to_string(),
-                    "root" => p.root = v != "false",
-                    _ => {}
-                }
+            let kv = crate::config::parse_kv(&content);
+            if let Some(name) = kv.get("name").filter(|v| !v.is_empty()) {
+                p.name = name.clone();
+            }
+            if let Some(root) = kv.get("root") {
+                p.root = root != "false";
             }
         }
 

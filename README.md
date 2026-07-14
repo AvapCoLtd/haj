@@ -183,13 +183,58 @@ echo "==> ${HAJ_PROJECT}: セットアップします"
 いるか)は**別物**です。共通の `mig` をプロジェクトの中で叩けば前者は `/usr/local/lib/haj`、
 後者は `example-app` になります。
 
+## 設定
+
+**git と同じ形**です。リポジトリ側は `.haj/`(git の `.git/`)、ユーザー側は
+`~/.config/haj/`(git の `~/.config/git/config`)。
+
+| 何 | 場所 |
+|---|---|
+| ユーザー設定 | `~/.config/haj/config` |
+| 個人用コマンド | `~/.config/haj/commands/` |
+| プロジェクト設定 | `<リポジトリ>/.haj/project` |
+| キャッシュ | `~/.cache/haj/` |
+
+形式は `.haj/project` と**同じ** `key = value`(`#` から行末はコメント)。
+設定ファイルの形式が2つあると「どっちがどっちだったか」を覚える羽目になるので、
+1つに揃えています。
+
+```
+# ~/.config/haj/config
+gitlab     = https://gitlab.avaper.day
+project_id = 788
+token      = glpat-xxxxxxxx
+
+hook_timeout_ms = 2000
+```
+
+値は **環境変数 > 設定ファイル > 既定値** の順で決まります。この3段が見えないと
+「なぜ効かないのか」を調べる手段が無くなるので、`haj config` が**実効値と一緒に
+出所を出します**(`haj which` が探索順を見せるのと同じ理由)。
+
+```console
+$ haj config
+設定ファイル: /home/kurari/.config/haj/config
+
+  command_path     /usr/local/lib/haj/commands   (既定値)
+  hook_timeout_ms  5000                          (設定ファイル)
+  gitlab           https://from-env.test         (環境変数)
+  token            ********                      (設定ファイル)
+```
+
+`token` は値を出しません(シェルの履歴やスクリーンショットに残るため)。設定されて
+いるかと、どこから来たかだけを示します。
+
 ## 自分自身の更新
 
 ```sh
 haj selfupgrade            # 最新なら何もしない
-haj selfupgrade 0.2.0      # その版を無条件に入れる(ダウングレードもこれ)
+haj selfupgrade 0.3.0      # その版を無条件に入れる(ダウングレードもこれ)
 haj selfupgrade --check    # 調べるだけ (0=最新 / 1=更新あり / 2=調べられず)
 ```
+
+トークンは `~/.config/haj/config` の `token` に書いておけば毎回渡さずに済みます
+(`HAJ_TOKEN` 環境変数でも可)。
 
 ## ディレクトリ構成(ツリー)
 

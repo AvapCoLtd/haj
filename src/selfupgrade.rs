@@ -14,6 +14,10 @@ use std::process::{Command, Stdio};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
+pub const DEFAULT_GITLAB: &str = "https://gitlab.avaper.day";
+pub const DEFAULT_PROJECT_ID: &str = "788";
+pub const DEFAULT_TARGET: &str = "x86_64-unknown-linux-musl";
+
 struct Config {
     gitlab: String,
     project_id: String,
@@ -23,15 +27,31 @@ struct Config {
 
 impl Config {
     fn load() -> Result<Self, String> {
-        let token = std::env::var("HAJ_TOKEN").map_err(|_| {
-            "HAJ_TOKEN を設定してください (GitLabのトークン)。\n  \
-             このリポジトリはprivateなので、リリースの取得に必要です。"
-                .to_string()
-        })?;
+        let cfg = crate::config::Config::load();
+
+        let token = cfg
+            .get_opt("HAJ_TOKEN", "token")
+            .map(|(v, _)| v)
+            .ok_or_else(|| {
+                let where_to = cfg
+                    .path
+                    .as_ref()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_else(|| "~/.config/haj/config".to_string());
+                format!(
+                    "GitLabのトークンがありません。このリポジトリはprivateなので、\
+                     リリースの取得に必要です。\n  \
+                     環境変数 HAJ_TOKEN を渡すか、{where_to} に書いてください:\n    \
+                     token = glpat-xxxxxxxx"
+                )
+            })?;
+
         Ok(Config {
-            gitlab: env_or("HAJ_GITLAB", "https://gitlab.avaper.day"),
-            project_id: env_or("HAJ_PROJECT_ID", "788"),
-            target: env_or("HAJ_TARGET", "x86_64-unknown-linux-musl"),
+            gitlab: cfg.get("HAJ_GITLAB", "gitlab", DEFAULT_GITLAB).0,
+            project_id: cfg
+                .get("HAJ_PROJECT_ID", "project_id", DEFAULT_PROJECT_ID)
+                .0,
+            target: cfg.get("HAJ_TARGET", "target", DEFAULT_TARGET).0,
             token,
         })
     }
@@ -50,10 +70,6 @@ impl Config {
             self.gitlab, self.project_id, version, file
         )
     }
-}
-
-fn env_or(key: &str, default: &str) -> String {
-    std::env::var(key).unwrap_or_else(|_| default.to_string())
 }
 
 pub fn run(args: &[String]) -> ! {
@@ -325,12 +341,13 @@ pub fn long_help() -> String {
 
 現在: haj {VERSION}
 
-取得は install.sh と同じ経路・同じ環境変数を使う。
+設定は ~/.config/haj/config に書ける(環境変数でも渡せる。haj config で実効値を確認)。
 
-  HAJ_TOKEN       (必須) GitLabのトークン
-  HAJ_GITLAB      既定 https://gitlab.avaper.day
-  HAJ_PROJECT_ID  既定 788
-  HAJ_TARGET      既定 x86_64-unknown-linux-musl
+  設定ファイルの鍵      環境変数           既定値
+  token               HAJ_TOKEN         (必須)
+  gitlab              HAJ_GITLAB        https://gitlab.avaper.day
+  project_id          HAJ_PROJECT_ID    788
+  target              HAJ_TARGET        x86_64-unknown-linux-musl
 
 置き換えは、現バイナリと同じディレクトリに書いてから rename する(原子的で、
 実行中のプロセスに影響しない)。書けない場所なら sudo での再実行を提案して終わる。
