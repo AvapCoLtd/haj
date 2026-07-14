@@ -80,7 +80,7 @@ fn main() {
             }
             Some((n, r)) => {
                 // 優先順位は git と同じ: 予約語(組み込み) > エイリアス > 探索。
-                // 定義はプロジェクトの .haj/project とユーザー設定から(aliases 参照)。
+                // 定義はプロジェクトの .haj/config とユーザー設定から(aliases 参照)。
                 // 直前までに -C を適用済みなので、移動先のプロジェクトの定義が見える。
                 if !alias_expanded && !n.starts_with('-') && !discovery::is_reserved(n) {
                     if let Some(a) = aliases::lookup(n) {
@@ -197,16 +197,7 @@ fn main() {
     // setup や reset は破壊的なので、どのプロジェクトが対象なのかをサブコマンド自身が
     // 名乗れないと事故る。cwd から決まる現在のプロジェクトを渡す
     // (コマンドが属するツリーは HAJ_ROOT。root=false の入れ子では両者は一致しない)。
-    match discovery::active_project() {
-        Some(p) => {
-            proc.env("HAJ_PROJECT", &p.name);
-            proc.env("HAJ_PROJECT_DIR", &p.dir);
-        }
-        None => {
-            proc.env_remove("HAJ_PROJECT");
-            proc.env_remove("HAJ_PROJECT_DIR");
-        }
-    }
+    apply_project_env(&mut proc);
 
     let err = proc.exec(); // 成功すれば戻ってこない
     eprintln!("haj: {} を実行できません: {err}", cmd.path.display());
@@ -249,6 +240,21 @@ fn die(msg: &str) -> ! {
 /// 解決に失敗したら本体を実行せずに終了する(fail-fast — 未解決の参照文字列が
 /// パスワードとしてそのまま使われる事故を防ぐ)。
 /// 規約フック(--haj-describe 等)はこの経路を通らないので展開されない。
+/// HAJ_PROJECT / HAJ_PROJECT_DIR を cwd から決めて注入する(SPEC §3.1)。
+/// プロジェクトの外では**消す** — 呼び出し元の環境に残った古い値を継がせない。
+fn apply_project_env(proc: &mut Proc) {
+    match discovery::active_project() {
+        Some(p) => {
+            proc.env("HAJ_PROJECT", &p.name);
+            proc.env("HAJ_PROJECT_DIR", &p.dir);
+        }
+        None => {
+            proc.env_remove("HAJ_PROJECT");
+            proc.env_remove("HAJ_PROJECT_DIR");
+        }
+    }
+}
+
 fn prepare_proc(path: &std::path::Path, args: &[String], deliveries: &[secrets::Delivery]) -> Proc {
     let mut proc = Proc::new(path);
     proc.args(args);
@@ -335,11 +341,13 @@ fn exec_program(prog: &str, args: Vec<String>, deliveries: &[secrets::Delivery])
 
     let mut proc = prepare_proc(&path, &args, deliveries);
 
-    // haj の外の世界のコマンドに、haj の顔をさせない。
-    proc.env_remove("HAJ_ROOT")
-        .env_remove("HAJ_NAME")
-        .env_remove("HAJ_PROJECT")
-        .env_remove("HAJ_PROJECT_DIR");
+    // haj の外の世界のコマンドに、hajサブコマンドの顔(HAJ_ROOT / HAJ_NAME)は
+    // させない。ただし HAJ_PROJECT は「サブコマンドであること」ではなく
+    // 「どこに対して実行しているか」の情報なので渡す — プロジェクト・エイリアスが
+    // sh へ委譲したとき(alias.hello = sh -- echo $HAJ_PROJECT)に自分の対象を
+    // 名乗れないのは §2.4(素性の可視化)に反する。
+    proc.env_remove("HAJ_ROOT").env_remove("HAJ_NAME");
+    apply_project_env(&mut proc);
 
     let err = proc.exec(); // 成功すれば戻ってこない
     eprintln!("haj: {} を実行できません: {err}", path.display());
@@ -495,7 +503,7 @@ fn print_help(topic: Option<&str>) {
     // 出自(プロジェクト / 設定ファイル)も右端に出す — コマンドの表と同じ規律。
     let aliases = aliases::list();
     if !aliases.is_empty() {
-        println!("\n エイリアス (設定ファイルまたは .haj/project の alias.*):");
+        println!("\n エイリアス (設定ファイルまたは .haj/config の alias.*):");
         let awidth = aliases.iter().map(|a| a.name.len()).max().unwrap_or(0);
         let dwidth = aliases
             .iter()
@@ -559,7 +567,7 @@ fn dirs_hint() -> String {
     let dirs = discovery::command_dirs();
     if dirs.is_empty() {
         format!(
-            "(該当なし) .haj/commands / ~/.haj/commands / {}",
+            "(該当なし) .haj/commands / ~/.config/haj/commands / {}",
             discovery::DEFAULT_COMMAND_PATH
         )
     } else {

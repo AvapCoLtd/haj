@@ -11,12 +11,12 @@
 //!
 //! そこで `.haj` を**プロジェクト境界**として扱う。既定では最初に見つけた `.haj` で
 //! 遡上を止める。親の共通コマンドも継承したい入れ子(モノレポのサブプロジェクト)
-//! だけが `.haj/project` に `root = false` と書いて、明示的に上へ抜ける。
+//! だけが `.haj/config` に `root = false` と書いて、明示的に上へ抜ける。
 
 use std::fs;
 use std::path::{Path, PathBuf};
 
-/// `.haj/project` の内容。ファイルが無くても既定値で成立する。
+/// `.haj/config` の内容。ファイルが無くても既定値で成立する。
 #[derive(Debug, Clone)]
 pub struct Project {
     /// 表示名。既定は `.haj` を含むディレクトリの名前。
@@ -47,10 +47,15 @@ impl Project {
             root: true,
         };
 
-        // `.haj/project` は `key = value` を並べただけの素朴な形式。
-        // ユーザー設定(~/.config/haj/config)と**同じ**パーサを使う。
-        // 設定ファイルの形式が2つあると「どっちがどっちだったか」を覚える羽目になる。
-        if let Ok(content) = fs::read_to_string(haj.join("project")) {
+        // `.haj/config` は `key = value` を並べただけの素朴な形式。ユーザー設定
+        // (~/.config/haj/config)と**同じ**パーサ・同じファイル名 — ツリー構成が
+        // スコープ間で対称になる(<scope>/config + <scope>/commands/ + <scope>/docs/)。
+        //
+        // ただしプロジェクト・スコープで効く鍵は**ホワイトリスト**(name / root /
+        // alias.*)。secrets.* や selfupgrade.* をここから読むと、clone した
+        // リポジトリに金庫や更新元の接続先を乗っ取られる。接続先を変える鍵は
+        // ユーザー設定と環境変数からしか読まない(~/.gitconfig と .git/config の関係)。
+        if let Ok(content) = fs::read_to_string(haj.join("config")) {
             let kv = crate::config::parse_kv(&content);
             if let Some(name) = kv.get("name").filter(|v| !v.is_empty()) {
                 p.name = name.clone();
@@ -69,7 +74,7 @@ impl Project {
 pub enum Origin {
     /// あるプロジェクトのもの(`.haj/commands`)
     Project(String),
-    /// 個人用(`~/.haj/commands`)
+    /// 個人用(`~/.config/haj/commands`)
     User,
     /// 全社/イメージ共通(`$HAJ_COMMAND_PATH`)
     System,

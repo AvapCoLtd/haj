@@ -49,9 +49,9 @@ Python でも `haj` から等しく扱われる。逆に、コアはこの契約
 そこで `.haj` を**プロジェクト境界**として扱う。カレントから遡って最初に見つけた `.haj` が
 そのプロジェクトであり、**そこで探索を打ち切る**。
 
-### 2.2 `.haj/project`
+### 2.2 `.haj/config`
 
-境界と名前は `.haj/project` で宣言する。**このファイルは無くてもよい**(既定値で成立する)。
+境界と名前は `.haj/config` で宣言する。**このファイルは無くてもよい**(既定値で成立する)。
 `key = value` を並べただけの形式で、`#` から行末はコメント。行末の `\` は継続。
 
 ```
@@ -63,6 +63,13 @@ root = true
 |---|---|---|
 | `name` | `.haj` を含むディレクトリの名前 | 表示名。一覧の出自ラベルと `HAJ_PROJECT` に使う |
 | `root` | `true` | `true` ならここで遡上を止める(境界)。`false` なら親の `.haj` も探しに行く |
+| `alias.*` | (無し) | プロジェクト・エイリアス(§2.7) |
+
+ファイル名も書式もユーザー設定と同じだが、**プロジェクト・スコープで効く鍵は上の
+3種だけ(ホワイトリスト)**。`secrets.*` や `selfupgrade.*` をここから読むと、clone
+したリポジトリに金庫や更新元の接続先を乗っ取られる。接続先・探索先を変える鍵は
+ユーザー設定と環境変数からしか読まない(git の `~/.gitconfig` と `.git/config` の
+関係と同型)。それ以外の鍵は黙って無視される。
 
 **`root = false` はモノレポのサブプロジェクト用。** 親の共通コマンド(`mig` など)も
 継承したい場合にだけ、明示的に壁を開ける。
@@ -136,7 +143,7 @@ root = true
 `alias.<名前> = <語...>` と書くと、その名前が**語の並びに展開されてから**実行される。
 残りの引数は後ろに繋がる。定義できる場所は2つで、**近いスコープが勝つ**:
 
-1. プロジェクトの `.haj/project`(そのプロジェクトの中でだけ有効)
+1. プロジェクトの `.haj/config`(そのプロジェクトの中でだけ有効)
 2. ユーザー設定 `~/.config/haj/config`
 
 ```
@@ -145,7 +152,7 @@ alias.ie = -C ~/repos/example-app
 ```
 
 ```
-# .haj/project — package.json の scripts に相当する「1行の委譲」
+# .haj/config — package.json の scripts に相当する「1行の委譲」
 name = myapp
 alias.test = exec docker compose exec app vendor/bin/phpunit --testdox
 alias.test.desc = テストを流す(コンテナ内)
@@ -426,14 +433,15 @@ haj __complete <名前> [語...]       → そのコマンドの --haj-complete 
 | ユーザー設定 | `$XDG_CONFIG_HOME/haj/config`(既定 `~/.config/haj/config`) |
 | 個人用コマンド | `$XDG_CONFIG_HOME/haj/commands/` |
 | 説明文キャッシュ | `$XDG_CACHE_HOME/haj/describe.tsv`(既定 `~/.cache/haj/`) |
-| プロジェクト設定 | `<リポジトリ>/.haj/project` |
+| プロジェクト設定 | `<リポジトリ>/.haj/config` |
 
-0.3.0 までの `~/.haj/commands/` も当面は読む(置いてあるコマンドが黙って消えるのが
-一番たちが悪い)。新規は `~/.config/haj/commands/` に置く。
+ユーザーとプロジェクトのツリー構成は**ファイル名まで対称**である
+(`config` + `commands/` + `docs/`)。覚える構造は1つでよい。
+旧 `~/.haj/`(0.3.0 までの置き場)はもう読まない。
 
 ### 8.2 形式
 
-**`.haj/project` と同じ `key = value`。** `#` から行末はコメント。
+**`.haj/config` と同じ `key = value`。** `#` から行末はコメント。
 **行末の `\` は継続**(シェルや git config と同じ)。継続行は空白1つで繋がる。
 
 設定ファイルの形式が2つあると「どっちがどっちだったか」を覚える羽目になる。
@@ -626,8 +634,11 @@ haj --secret DB_HOST=vault://secret/data/db/host exec sh -c 'mysql -h $DB_HOST'
 - **シェルの変数展開が要るなら、明示的に `sh -c` を書くか、省略形 `haj sh` を使う。**
   コアは文字列をシェルに包まない(§11 — コアは引数を解釈しない)。`$VAR` を使わないなら
   `haj exec mysql -h db.example` のようにそのまま並べればよい
-- `HAJ_ROOT` / `HAJ_NAME` / `HAJ_PROJECT` / `HAJ_PROJECT_DIR` は**渡さない**(明示的に
-  削除する)。haj の外の世界のコマンドに、haj の顔をさせない
+- `HAJ_ROOT` / `HAJ_NAME` は**渡さない**(明示的に削除する)。haj の外の世界の
+  コマンドに、hajサブコマンドの顔をさせない
+- `HAJ_PROJECT` / `HAJ_PROJECT_DIR` は**渡す**(§3.1 と同じ規則)。これは「サブコマンド
+  であること」ではなく「どこに対して実行しているか」の情報で、プロジェクト・エイリアス
+  が `sh --` へ委譲したときに対象を名乗れないのは §2.4 に反する
 - 見つからなければ `127`、exec に失敗したら `126`(§3.3 と同じ)
 - `exec` は予約語(§2.6)。`.haj/commands/exec` で置き換えられると、`--secret` で
   展開したシークレットを横取りする最短経路になるため、**探索より常に優先**する

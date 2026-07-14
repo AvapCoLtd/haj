@@ -50,9 +50,9 @@ pub fn active_project() -> Option<Project> {
     let cwd = env::current_dir().ok()?;
     let home = home_dir();
     for ancestor in cwd.ancestors() {
-        // ~/.haj は「個人用」であってプロジェクトではない。HOMEの下で作業していると
-        // 遡上の途中で踏むが、これをプロジェクト扱いすると、どのリポジトリにいても
-        // 「プロジェクト: kurari」と表示されてしまう。
+        // HOME はプロジェクトにしない。~/.haj が置いてあると遡上の途中で踏むが、
+        // これをプロジェクト扱いすると、どのリポジトリにいても HOME が
+        // プロジェクトとして効いてしまう。個人スコープは ~/.config/haj/ が正。
         if Some(ancestor) == home.as_deref() {
             continue;
         }
@@ -65,9 +65,9 @@ pub fn active_project() -> Option<Project> {
 
 /// 探索対象の commands ディレクトリを、優先度の高い順に返す。
 ///
-/// 1. カレントから上へ辿った `.haj/commands` — **境界で止まる**
-/// 2. `~/.haj/commands`                      — 個人用
-/// 3. `$HAJ_COMMAND_PATH` の各ディレクトリ    — 全社/イメージ共通
+/// 1. カレントから上へ辿った `.haj/commands`   — **境界で止まる**
+/// 2. `~/.config/haj/commands`                — 個人用
+/// 3. `$HAJ_COMMAND_PATH` の各ディレクトリ     — 全社/イメージ共通
 pub fn command_dirs() -> Vec<Dir> {
     let mut dirs = Vec::new();
 
@@ -118,7 +118,7 @@ pub fn project_trees() -> Vec<(PathBuf, Origin)> {
     if let Ok(cwd) = env::current_dir() {
         for ancestor in cwd.ancestors() {
             if Some(ancestor) == home.as_deref() {
-                continue; // ~/.haj は個人用。別枠で拾う
+                continue; // HOME はプロジェクトにしない。個人スコープは ~/.config/haj/
             }
             let Some(proj) = Project::load(ancestor) else {
                 continue;
@@ -143,12 +143,6 @@ pub fn doc_trees() -> Vec<(PathBuf, Origin)> {
             trees.push((d, Origin::User));
         }
     }
-    if let Some(home) = home_dir() {
-        let legacy = home.join(".haj");
-        if legacy.is_dir() {
-            trees.push((legacy, Origin::User));
-        }
-    }
 
     let cfg = crate::config::Config::load();
     let (system, _) = cfg.get("HAJ_COMMAND_PATH", "command_path", DEFAULT_COMMAND_PATH);
@@ -161,22 +155,14 @@ pub fn doc_trees() -> Vec<(PathBuf, Origin)> {
     trees
 }
 
-/// 個人用コマンドの置き場所。
-///
-/// 正は `$XDG_CONFIG_HOME/haj/commands`(既定 `~/.config/haj/commands`)。
-/// 0.3.0 までは `~/.haj/commands` だったので、そちらも当面は読む
-/// (置いてあるコマンドが黙って消えるのが一番たちが悪い)。
+/// 個人用コマンドの置き場所: `$XDG_CONFIG_HOME/haj/commands`(既定
+/// `~/.config/haj/commands`)。ユーザー・スコープのツリーは ~/.config/haj/ に
+/// 一本化されている(config / commands / docs — プロジェクトの .haj/ と対称)。
 fn user_command_dirs() -> Vec<PathBuf> {
     let mut dirs = Vec::new();
     if let Some(d) = crate::config::config_dir().map(|c| c.join("commands")) {
         if d.is_dir() {
             dirs.push(d);
-        }
-    }
-    if let Some(home) = home_dir() {
-        let legacy = home.join(".haj").join("commands");
-        if legacy.is_dir() {
-            dirs.push(legacy);
         }
     }
     dirs
