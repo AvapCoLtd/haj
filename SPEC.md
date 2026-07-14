@@ -423,7 +423,7 @@ token = vault://users/hajime/gitlab-pat/gitlab.avaper.day/token
 | `haj config [--init]` | 設定の実効値と出所。`--init` は雛形を出す(§8) |
 | `haj selfupgrade` | コア自身の更新(§9.1) |
 | `haj secrets` | シークレット参照の展開対象を確認する(§10.6) |
-| `haj exec <プログラム> [引数...]` | PATH のコマンドにシークレットを注入して実行(§9.2) |
+| `haj exec [--] <プログラム> [引数...]` | PATH のコマンドにシークレットを注入して実行(§9.2) |
 | `haj sh '<コマンド>' [引数...]` | `exec sh -c` の省略形(§9.2) |
 | `haj --version` | コアの版 |
 | `haj __complete ...` | 補完プロトコル(人間向けではない) |
@@ -524,7 +524,13 @@ haj --secret DB_HOST=vault://avap/data/db/host exec sh -c 'mysql -h $DB_HOST'
 ```sh
 haj --secret MYSQL_HOST=vault://avap/data/db/host sh 'mysql -h $MYSQL_HOST'
 haj sh 'echo $1-$2' one two    # → one-two
+haj sh -- ls -la               # `--` の後は語を空白で繋いで1行にする(ssh 方式)
 ```
+
+**先頭の `--` は両方が受け付ける。** `haj exec -- <プログラム> [引数...]` は読み飛ばすだけ
+(`op run --` / `kubectl exec --` の指癖と互換)。`haj sh -- <語...>` は以降の語を空白で
+繋いで1行のスクリプトにする。引用が要る引数を含むなら `haj sh '<コマンド>'` の
+1文字列形式で書くこと。
 
 ---
 
