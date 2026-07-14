@@ -6,6 +6,10 @@
 #   haj __complete <名前> <語...> → そのコマンドの --haj-complete へ転送
 #
 # よってサブコマンドを足しても、このファイルを触る必要はない。
+#
+# コアが `@delegate<TAB><argv...>` を返したときは、**そのコマンド自身の補完に委譲**する
+# (`haj exec kubectl <TAB>` や、exec を含むエイリアス)。sudo / env などのラッパーが
+# 使う定石(words を組み替えて _normal を呼ぶ)と同じ。
 
 _haj() {
   local -a cands
@@ -24,6 +28,16 @@ _haj() {
 
   # 2語目以降は当該コマンドに聞く。カーソル直前までの入力済みの語を渡す。
   cands=(${(f)"$(haj __complete ${words[2]} ${words[3,CURRENT-1]} 2>/dev/null)"})
+
+  # 委譲の指示: haj の外のコマンドなので、そのコマンド自身の補完に丸投げする
+  if [[ ${cands[1]} == '@delegate'$'\t'* ]]; then
+    local -a argv
+    argv=(${(ps:\t:)${cands[1]#@delegate$'\t'}})
+    words=($argv ${words[CURRENT]})
+    (( CURRENT = ${#words} ))
+    _normal
+    return
+  fi
 
   # 丸括弧だけの1行は候補ではなく説明(SPEC.md 4.3)
   if (( ${#cands} == 1 )) && [[ ${cands[1]} == \(*\) ]]; then

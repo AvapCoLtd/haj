@@ -490,12 +490,13 @@ fn print_help(topic: Option<&str>) {
     }
 
     // エイリアス(SPEC §2.7)。呼べる名前である以上、一覧から漏らさない。
-    let aliases = config::Config::load().aliases();
+    let cfg = config::Config::load();
+    let aliases = cfg.aliases();
     if !aliases.is_empty() {
         println!("\n エイリアス (~/.config/haj/config の alias.*):");
         let awidth = aliases.iter().map(|(n, _)| n.len()).max().unwrap_or(0);
         for (n, v) in &aliases {
-            println!("   {n:awidth$}  → haj {v}");
+            println!("   {n:awidth$}  {}", alias_summary(&cfg, n, v));
         }
     }
 
@@ -557,6 +558,22 @@ fn dirs_hint() -> String {
     }
 }
 
+/// 一覧・補完に出すエイリアスの説明。`alias.<名前>.desc` があればそれ、
+/// 無ければ展開そのもの(長いものは切り詰める。読めないより短い方がまし)。
+fn alias_summary(cfg: &config::Config, name: &str, expansion: &str) -> String {
+    if let Some(d) = cfg.alias_desc(name) {
+        return d;
+    }
+    const MAX: usize = 48;
+    let one_line: String = expansion.split_whitespace().collect::<Vec<_>>().join(" ");
+    if one_line.chars().count() <= MAX {
+        format!("→ haj {one_line}")
+    } else {
+        let short: String = one_line.chars().take(MAX).collect();
+        format!("→ haj {short}…")
+    }
+}
+
 /// 補完プロトコル(シェル補完スクリプトから呼ばれる)。
 ///
 ///   haj __complete                  → "名前\t説明" を列挙
@@ -566,6 +583,78 @@ fn dirs_hint() -> String {
 /// 補完を書き足す必要がない。
 fn complete(args: &[String]) {
     let Some((name, words)) = args.split_first() else {
+        complete_names();
+        return;
+    };
+
+    // エイリアスなら展開して、実効コマンドの補完に回す(SPEC §6)。
+    // 展開しないと `haj oci <TAB>` のようなエイリアスで補完が死ぬ。
+    let (name, words): (String, Vec<String>) = match config::Config::load().alias(name) {
+        Some(exp) => {
+            let argv: Vec<String> = exp.split_whitespace().map(str::to_string).collect();
+            let mut i = 0;
+            while i < argv.len() {
+                match argv[i].as_str() {
+                    // -C は実際に移動する。移動先のコマンドを補完するため
+                    // (`alias.pj = -C ~/repos/x` の `haj pj <TAB>`)。
+                    "-C" => {
+                        if let Some(dir) = argv.get(i + 1) {
+                            let _ = std::env::set_current_dir(expand_home(dir));
+                        }
+                        i += 2;
+                    }
+                    "--secret" | "--env-file" | "--secret-file" => i += 2,
+                    _ => break,
+                }
+            }
+            let mut rest: Vec<String> = argv[i.min(argv.len())..].to_vec();
+            if rest.is_empty() {
+                // フラグだけのエイリアス(-C など)。移動先のコマンド一覧を出す。
+                complete_names();
+                return;
+            }
+            let n = rest.remove(0);
+            rest.extend(words.iter().cloned());
+            (n, rest)
+        }
+        None => (name.to_string(), words.to_vec()),
+    };
+    let words: &[String] = &words;
+
+    // exec / sh は haj の外のコマンドを走らせる。候補は haj には作れないので、
+    // **そのコマンド自身の補完に委譲する**ようシェルへ指示を返す(SPEC §6)。
+    if name == "exec" {
+        let argv = strip_dashdash(words);
+        if argv.is_empty() {
+            return;
+        }
+        println!("@delegate\t{}", argv.join("\t"));
+        return;
+    }
+    if name == "sh" {
+        return; // シェルの1行に候補は作れない
+    }
+
+    // 組み込みは探索の対象ではないので、先に見る
+    if builtin::find(&name).is_some() {
+        for c in builtin::complete(&name, words) {
+            println!("{c}");
+        }
+        return;
+    }
+
+    // 未知のコマンドなら候補なし。エラーにはしない(補完中に赤い文字を出さない)。
+    let Some(cmd) = discovery::resolve(&name) else {
+        return;
+    };
+    for c in contract::complete(&cmd, words) {
+        println!("{c}");
+    }
+}
+
+/// 打てる名前を全部出す(探索で見つかるもの + 組み込み + エイリアス)。
+fn complete_names() {
+    {
         let mut cache = DescribeCache::load();
         let mut rows: Vec<(String, String)> = discovery::list()
             .into_iter()
@@ -582,32 +671,19 @@ fn complete(args: &[String]) {
                 .map(|b| (b.name.to_string(), b.describe.to_string())),
         );
         // エイリアスも呼べる名前(SPEC §2.7)
+        let cfg = config::Config::load();
         rows.extend(
-            config::Config::load()
-                .aliases()
+            cfg.aliases()
                 .into_iter()
-                .map(|(n, v)| (n, format!("エイリアス → haj {v}"))),
+                .map(|(n, v)| {
+                    let d = alias_summary(&cfg, &n, &v);
+                    (n, d)
+                })
+                .collect::<Vec<_>>(),
         );
         rows.sort();
         for (name, desc) in rows {
             println!("{name}\t{desc}");
         }
-        return;
-    };
-
-    // 組み込みは探索の対象ではないので、先に見る
-    if builtin::find(name).is_some() {
-        for c in builtin::complete(name, words) {
-            println!("{c}");
-        }
-        return;
-    }
-
-    // 未知のコマンドなら候補なし。エラーにはしない(補完中に赤い文字を出さない)。
-    let Some(cmd) = discovery::resolve(name) else {
-        return;
-    };
-    for c in contract::complete(&cmd, words) {
-        println!("{c}");
     }
 }

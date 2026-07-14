@@ -1086,3 +1086,104 @@ fn completionは補完スクリプトを出す() {
     );
     assert_eq!(sb.haj(&sb.dir, cp, &["completion"]).status.code(), Some(1));
 }
+
+#[test]
+fn 設定は行末のバックスラッシュで継続できる() {
+    let sb = Sandbox::new("cfg-cont");
+    // 長い alias は1行に収まらない。継続行で書けること。
+    sb.write(
+        "xdgconf/haj/config",
+        "alias.pj = -C proj \\\n           --secret HAJ_T_VALUE=hello \\\n           deploy\n",
+    );
+    sb.command(
+        "proj/.haj",
+        "deploy",
+        "#!/bin/sh\ncase \"$1\" in --haj-*) exit 0 ;; esac\nprintf '%s\\n' \"$HAJ_T_VALUE\"\n",
+    );
+
+    let out = Command::new(env!("CARGO_BIN_EXE_haj"))
+        .args(["pj"])
+        .current_dir(&sb.dir)
+        .env("HAJ_COMMAND_PATH", sb.path("nonexistent"))
+        .env("HAJ_NO_CACHE", "1")
+        .env("HOME", &sb.dir)
+        .env("XDG_CONFIG_HOME", sb.path("xdgconf"))
+        .output()
+        .unwrap();
+
+    assert!(out.status.success(), "継続行が繋がっていない");
+    assert_eq!(stdout(&out).trim(), "hello");
+}
+
+#[test]
+fn エイリアスの補完は展開してから転送する() {
+    let sb = Sandbox::new("alias-comp");
+    sb.write("xdgconf/haj/config", "alias.pj = -C proj\n");
+    sb.command(
+        "proj/.haj",
+        "mig",
+        &conforming("マイグレーション", "", "up down", "true"),
+    );
+
+    let out = Command::new(env!("CARGO_BIN_EXE_haj"))
+        .args(["__complete", "pj"])
+        .current_dir(&sb.dir)
+        .env("HAJ_COMMAND_PATH", sb.path("nonexistent"))
+        .env("HAJ_NO_CACHE", "1")
+        .env("HOME", &sb.dir)
+        .env("XDG_CONFIG_HOME", sb.path("xdgconf"))
+        .output()
+        .unwrap();
+
+    // -C proj で移動した先のコマンドが候補に出る
+    assert!(
+        stdout(&out).contains("mig"),
+        "エイリアス越しに補完できていない:\n{}",
+        stdout(&out)
+    );
+}
+
+#[test]
+fn execの補完はそのコマンド自身へ委譲する() {
+    let sb = Sandbox::new("exec-comp");
+    sb.write(
+        "xdgconf/haj/config",
+        "alias.oci = --secret K=v exec oci\nalias.oci.desc = OCI CLI を起動する\n",
+    );
+
+    let haj = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_haj"))
+            .args(args)
+            .current_dir(&sb.dir)
+            .env("HAJ_COMMAND_PATH", sb.path("nonexistent"))
+            .env("HAJ_NO_CACHE", "1")
+            .env("HOME", &sb.dir)
+            .env("XDG_CONFIG_HOME", sb.path("xdgconf"))
+            .output()
+            .unwrap()
+    };
+
+    // エイリアス経由: グローバルフラグを読み飛ばし、exec の先へ委譲する
+    let out = stdout(&haj(&["__complete", "oci", "iam"]));
+    assert_eq!(out.trim(), "@delegate\toci\tiam", "委譲の指示が違う: {out}");
+
+    // 直接の exec でも同じ
+    let out = stdout(&haj(&["__complete", "exec", "kubectl", "get"]));
+    assert_eq!(out.trim(), "@delegate\tkubectl\tget");
+
+    // 説明は alias.<名前>.desc が使われる(長い展開の代わりに)
+    let list = stdout(&haj(&["__complete"]));
+    assert!(
+        list.contains("oci\tOCI CLI を起動する"),
+        "descが補完の説明に出ていない:\n{list}"
+    );
+    // .desc 自体はエイリアスとして現れない
+    assert!(!list.contains("oci.desc"), "descがコマンド名になっている");
+
+    // help の一覧にも desc が出る
+    let help = stdout(&haj(&["help"]));
+    assert!(
+        help.contains("OCI CLI を起動する"),
+        "helpにdescが無い:\n{help}"
+    );
+}

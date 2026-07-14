@@ -202,6 +202,13 @@ haj config --init > ~/.config/haj/config   # まだ無ければ雛形を出す
 # ~/.config/haj/config
 alias.web = -C ~/repos/webapp
 alias.wm  = -C ~/repos/webapp mig
+
+# 長いものは行末の \ で継続。説明は .desc に書ける(一覧と補完に出る)
+alias.oci = --secret OCI_CLI_USER=vault://users/me/oci/user \
+            --secret OCI_CLI_TENANCY=vault://users/me/oci/tenancy \
+            --secret-file OCI_CLI_KEY_FILE=vault://users/me/oci/private_key \
+            exec oci
+alias.oci.desc = OCI CLI を金庫の資格情報で起動する
 ```
 
 ```console
@@ -215,6 +222,8 @@ $ haj wm up             # → haj -C ~/repos/webapp mig up
 - 定義を読むのは**ユーザー設定だけ**。リポジトリからは定義できない
   (clone したリポジトリに `alias.mig = sh '...'` を仕込ませないため)
 - `haj which <名前>` で展開を確認でき、`haj` の一覧にもエイリアスの節が出る
+- **補完も効く。** `haj web <TAB>` は移動先のプロジェクトのコマンドを補完し、
+  `haj oci <TAB>` は `oci` 自身の補完に委譲される(`haj exec kubectl <TAB>` も同様)
 
 ### 規約(A / B に共通)
 
@@ -313,7 +322,7 @@ echo "==> ${HAJ_PROJECT}: セットアップします"
 | プロジェクト設定 | `<リポジトリ>/.haj/project` |
 | キャッシュ | `~/.cache/haj/` |
 
-形式は `.haj/project` と**同じ** `key = value`(`#` から行末はコメント)。
+形式は `.haj/project` と**同じ** `key = value`(`#` から行末はコメント、行末の `\` は継続)。
 設定ファイルの形式が2つあると「どっちがどっちだったか」を覚える羽目になるので、
 1つに揃えています。
 
@@ -328,6 +337,19 @@ hook_timeout_ms = 2000
 ```
 
 雛形は `haj config --init > ~/.config/haj/config` で出せます。
+
+長いエイリアスは**行末の `\` で継続**できます(シェルと同じ)。
+
+```
+alias.oci = --secret OCI_CLI_USER=vault://users/me/oci/user \
+            --secret OCI_CLI_TENANCY=vault://users/me/oci/tenancy \
+            --secret-file OCI_CLI_KEY_FILE=vault://users/me/oci/private_key \
+            exec oci
+```
+
+```console
+$ haj oci iam region list     # ↑に展開されて、残りの引数が oci に渡る
+```
 
 値は **環境変数 > 設定ファイル > 既定値** の順で決まります。この3段が見えないと
 「なぜ効かないのか」を調べる手段が無くなるので、`haj config` が**実効値と一緒に

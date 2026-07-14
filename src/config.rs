@@ -84,12 +84,25 @@ impl Config {
             .iter()
             .filter_map(|(k, val)| {
                 let name = k.strip_prefix("alias.")?;
-                (!name.is_empty() && !val.is_empty() && !crate::discovery::is_reserved(name))
-                    .then(|| (name.to_string(), val.clone()))
+                // `alias.<名前>.desc` は説明であってエイリアスではない
+                (!name.is_empty()
+                    && !name.ends_with(".desc")
+                    && !val.is_empty()
+                    && !crate::discovery::is_reserved(name))
+                .then(|| (name.to_string(), val.clone()))
             })
             .collect();
         v.sort();
         v
+    }
+
+    /// `alias.<名前>.desc` — 一覧と補完に出す一行説明。
+    /// 長いエイリアスは展開をそのまま出すと読めないので、これを書ける。
+    pub fn alias_desc(&self, name: &str) -> Option<String> {
+        self.map
+            .get(&format!("alias.{name}.desc"))
+            .filter(|v| !v.is_empty())
+            .cloned()
     }
 
     /// 既定値を持たない値(トークンなど)。無ければ None。
@@ -208,7 +221,7 @@ fn group_title(group: &str) -> &str {
 /// コメントを外す:  haj config --init > ~/.config/haj/config
 pub fn template() {
     println!("# haj の設定");
-    println!("# 形式: key = value。'#' から行末はコメント。すべて省略可 (既定値で動く)。");
+    println!("# 形式: key = value。'#' から行末はコメント。行末の '\\' は継続。すべて省略可。");
     println!("# 優先順位: 環境変数 > 設定ファイル > 既定値。実効値は `haj config` で確認。");
     let mut group = None;
     for (env_key, file_key, default, desc) in KEYS {
@@ -227,6 +240,11 @@ pub fn template() {
     println!();
     println!("# alias.<名前> = <語...>  名前が語の並びに展開され、残りの引数が続く");
     println!("# alias.ie = -C ~/repos/example-app");
+    println!("#");
+    println!("# 長いものは行末の '\\' で継続できる:");
+    println!("# alias.oci = --secret OCI_CLI_USER=vault://users/me/oci/user \\");
+    println!("#             --secret-file OCI_CLI_KEY_FILE=vault://users/me/oci/private_key \\");
+    println!("#             exec oci");
     println!();
     println!("# private な取得元(GitLab)を使うときのトークン (環境変数: HAJ_TOKEN)。");
     println!("# 平文でも、シークレット参照でもよい (SPEC §8.4):");
@@ -294,28 +312,63 @@ pub fn show() {
 }
 
 /// `key = value` を並べただけの形式。`#` から行末はコメント。
+/// **行末の `\` は継続**(シェルや git config と同じ)。継続行は空白1つで繋がる。
 ///
 /// `.haj/project` と共用する。値は前後の空白と引用符を落とすだけで、
 /// エスケープも型も無い。これ以上のものが要るなら、それは設定ファイルではなく
 /// コマンドとして書くべきものだと考える。
 pub fn parse_kv(content: &str) -> HashMap<String, String> {
     let mut map = HashMap::new();
-    for line in content.lines() {
-        let line = match line.find('#') {
-            Some(i) => &line[..i],
-            None => line,
+    let mut pending = String::new();
+
+    for raw in content.lines() {
+        // コメントを落としてから継続を見る(`#` の後ろの `\` は継続ではない)
+        let line = match raw.find('#') {
+            Some(i) => &raw[..i],
+            None => raw,
         };
         let line = line.trim();
-        if line.is_empty() {
+        if line.is_empty() && pending.is_empty() {
             continue;
         }
-        let Some((k, v)) = line.split_once('=') else {
+
+        // 行末の `\` は継続(シェルや git config と同じ)。長い alias が1行に
+        // 収まらないと読めないし書けない。継続行は空白1つで繋ぐ。
+        if let Some(head) = line.strip_suffix('\\') {
+            if !pending.is_empty() {
+                pending.push(' ');
+            }
+            pending.push_str(head.trim_end());
+            continue;
+        }
+
+        let joined = if pending.is_empty() {
+            line.to_string()
+        } else {
+            let mut j = std::mem::take(&mut pending);
+            j.push(' ');
+            j.push_str(line);
+            j
+        };
+
+        let Some((k, v)) = joined.split_once('=') else {
             continue;
         };
         let k = k.trim();
         let v = v.trim().trim_matches('"');
         if !k.is_empty() {
             map.insert(k.to_string(), v.to_string());
+        }
+    }
+
+    // 継続で終わったまま(最後の行が `\`)なら、そこまでを使う
+    if !pending.is_empty() {
+        if let Some((k, v)) = pending.split_once('=') {
+            let k = k.trim();
+            let v = v.trim().trim_matches('"');
+            if !k.is_empty() {
+                map.insert(k.to_string(), v.to_string());
+            }
         }
     }
     map
