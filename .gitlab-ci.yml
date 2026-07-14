@@ -234,11 +234,17 @@ build-public-x86_64:
 
 build-public-aarch64:
   <<: *build-public
-  # aarch64-musl のクロスツールチェーン入りイメージ。リンカの用意が要らない。
+  # aarch64-musl のクロスツールチェーン入りイメージ。
   image: avap.plus/dockerhub/messense/rust-musl-cross:aarch64-musl
   before_script: []
   variables:
     PUB_TARGET: aarch64-unknown-linux-musl
+    # このイメージはクロスリンカの設定を /root/.cargo/config.toml に持っているが、
+    # CI 全体で CARGO_HOME をプロジェクト内に向けているため読まれない。
+    # 結果、ホストの ld で aarch64 をリンクしようとして
+    # 「file in wrong format」で落ちる。リンカを環境変数で明示する。
+    CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: aarch64-unknown-linux-musl-gcc
+    CC_aarch64_unknown_linux_musl: aarch64-unknown-linux-musl-gcc
 
 # GitHub Releases。タグはミラー済みであること(needs: mirror)。
 github-release:
