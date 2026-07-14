@@ -49,4 +49,12 @@ _haj() {
   _describe -t values "haj ${words[2]}" cands
 }
 
-_haj "$@"
+# fpath に置かれた場合(#compdef 経由の autoload)は補完関数として呼ばれる。
+# `eval "$(haj completion zsh)"` で読み込まれた場合は、ここで登録するだけにする
+# — 補完コンテキストの外で _haj を呼ぶと _describe などが "can only be called from
+# completion function" で怒る。
+if [[ ${funcstack[1]} == _haj ]]; then
+  _haj "$@"
+else
+  compdef _haj haj
+fi
