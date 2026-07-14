@@ -125,10 +125,11 @@ root = true
 - 空文字列
 - `.` または `-` で始まるもの
 - `/` を含むもの
-- **予約語**: `help`, `commands`, `which`, `config`, `selfupgrade`, `secrets`, `__complete`
+- **予約語**: `help`, `commands`, `which`, `config`, `exec`, `selfupgrade`, `secrets`, `__complete`
 
 予約語を弾くのは、`.haj/commands/help` を置かれるとコアのヘルプが奪われ、
-「コマンド一覧を出す手段が無くなる」状態に陥りうるため。
+「コマンド一覧を出す手段が無くなる」状態に陥りうるため。`exec` はさらに強い理由で
+奪われてはならない — 置き換えられると**展開済みシークレットを横取りする最短経路**になる(§9.2)。
 
 ---
 
@@ -396,6 +397,7 @@ hook_timeout_ms = 2000
 | `haj config` | 設定の実効値と、その出所(§8) |
 | `haj selfupgrade` | コア自身の更新(§9.1) |
 | `haj secrets` | シークレット参照の展開対象を確認する(§10.6) |
+| `haj exec <プログラム> [引数...]` | PATH のコマンドにシークレットを注入して実行(§9.2) |
 | `haj --version` | コアの版 |
 | `haj __complete ...` | 補完プロトコル(人間向けではない) |
 
@@ -418,6 +420,7 @@ hook_timeout_ms = 2000
    which        どの定義が効いているかを見る (--all で隠れているものも)
    selfupgrade  haj自身を更新する
    secrets      シークレット参照の展開対象を確認する (dry-run)
+   exec         PATHのコマンドにシークレットを注入して実行する
 ```
 
 `haj commands` では出自ラベル `[haj]`、パスの代わりに `(組み込み)` を出す。
@@ -465,6 +468,27 @@ haj selfupgrade [<版>] [--check]
 | `HAJ_PROJECT_ID` | `788` | hajのプロジェクトID |
 | `HAJ_TARGET` | `x86_64-unknown-linux-musl` | 取得するビルドのターゲット |
 | `HAJ_TOKEN` | (必須) | 取得に使うトークン。`CI_JOB_TOKEN` と同値なら JOB-TOKEN ヘッダを使う |
+
+### 9.2 `haj exec`
+
+探索を**通さず**、PATH のコマンド(`/` を含めばそのパス)に**シークレットの注入だけ
+して**実行する。`op run` / `doppler run` が占めている場所。「注入は欲しいが、haj の
+コマンドにするほどではない」一回きりの実行のためにある。
+
+```sh
+haj --secret DB_HOST=vault://avap/data/db/host exec sh -c 'mysql -h $DB_HOST'
+```
+
+- 展開の規則(§10)はサブコマンド実行と完全に同じ。受け渡しフラグ(§10.7)も
+  ambient な走査(`HAJ_SECRETS=1`)も同様に乗る
+- **シェルの変数展開が要るなら、明示的に `sh -c` を書く。** コアは文字列をシェルに
+  包まない(§11 — コアは引数を解釈しない)。`$VAR` を使わないなら
+  `haj exec mysql -h db.example` のようにそのまま並べればよい
+- `HAJ_ROOT` / `HAJ_NAME` / `HAJ_PROJECT` / `HAJ_PROJECT_DIR` は**渡さない**(明示的に
+  削除する)。haj の外の世界のコマンドに、haj の顔をさせない
+- 見つからなければ `127`、exec に失敗したら `126`(§3.2 と同じ)
+- `exec` は予約語(§2.6)。`.haj/commands/exec` で置き換えられると、`--secret` で
+  展開したシークレットを横取りする最短経路になるため、**探索より常に優先**する
 
 ---
 

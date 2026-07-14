@@ -672,3 +672,106 @@ fn フラグの後にコマンドが無ければ使い方エラー() {
     let out = sb.haj(&cp, &["--secret", "K=v", "help"], &[]);
     assert_eq!(out.status.code(), Some(1));
 }
+
+// ---- haj exec(SPEC §9.2): 探索を通さず PATH のコマンドに注入して実行 ----
+
+#[test]
+fn execはpathのコマンドに注入して実行する() {
+    let sb = Sandbox::new("exec");
+    let cp = sb.show_command(); // HAJ_COMMAND_PATH には dbtool は無い
+    let vault = sb.fake_vault();
+    sb.exe(
+        "extbin/dbtool",
+        "#!/bin/sh\nprintf '%s\\n' \"$HAJ_T_VALUE\"\n",
+    );
+    let path = format!(
+        "{}:{}",
+        sb.dir.join("extbin").display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+
+    let out = sb.haj(
+        &cp,
+        &[
+            "--secret",
+            "HAJ_T_VALUE=vault://avap/data/hoge/fuga",
+            "exec",
+            "dbtool",
+        ],
+        &[("HAJ_VAULT_CMD", vault.to_str().unwrap()), ("PATH", &path)],
+    );
+    assert!(out.status.success(), "stderr: {}", stderr(&out));
+    assert_eq!(stdout(&out).trim(), "s3cr3t");
+}
+
+#[test]
+fn execはシェルを明示すれば変数展開が使える() {
+    let sb = Sandbox::new("exec-sh");
+    let cp = sb.show_command();
+
+    let out = sb.haj(
+        &cp,
+        &[
+            "--secret",
+            "HAJ_T_VALUE=hello",
+            "exec",
+            "sh",
+            "-c",
+            "printf '%s' \"$HAJ_T_VALUE\"",
+        ],
+        &[],
+    );
+    assert!(out.status.success(), "stderr: {}", stderr(&out));
+    assert_eq!(stdout(&out), "hello");
+}
+
+#[test]
+fn execは探索のコマンドを見ずhaj環境変数も渡さない() {
+    let sb = Sandbox::new("exec-isolated");
+    // 探索ツリーに同名 dbtool を置くが、PATH には置かない → exec からは見えない
+    let cp = sb.show_command();
+    sb.exe("sys/commands/dbtool", "#!/bin/sh\necho from-tree\n");
+
+    let out = sb.haj(&cp, &["exec", "dbtool"], &[]);
+    assert_eq!(out.status.code(), Some(127), "stderr: {}", stderr(&out));
+
+    // HAJ_ROOT / HAJ_PROJECT は exec には渡らない(親環境に残っていても消す)
+    let out = sb.haj(
+        &cp,
+        &[
+            "exec",
+            "sh",
+            "-c",
+            "printf '%s' \"${HAJ_ROOT:-none}:${HAJ_PROJECT:-none}\"",
+        ],
+        &[("HAJ_ROOT", "/stale"), ("HAJ_PROJECT", "stale")],
+    );
+    assert!(out.status.success(), "stderr: {}", stderr(&out));
+    assert_eq!(stdout(&out), "none:none");
+}
+
+#[test]
+fn execは予約語なので探索コマンドに奪われない() {
+    let sb = Sandbox::new("exec-reserved");
+    let cp = sb.show_command();
+    // 悪意ある exec を探索ツリーに置いても、組み込みが常に勝つ
+    let marker = sb.dir.join("stolen");
+    sb.exe(
+        "sys/commands/exec",
+        &format!("#!/bin/sh\ntouch \"{}\"\n", marker.display()),
+    );
+
+    let out = sb.haj(&cp, &["exec", "sh", "-c", "true"], &[]);
+    assert!(out.status.success(), "stderr: {}", stderr(&out));
+    assert!(!marker.exists(), "探索の exec に奪われた");
+}
+
+#[test]
+fn execの引数なしは使い方エラー() {
+    let sb = Sandbox::new("exec-usage");
+    let cp = sb.show_command();
+
+    let out = sb.haj(&cp, &["exec"], &[]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(stderr(&out).contains("使い方"), "stderr: {}", stderr(&out));
+}

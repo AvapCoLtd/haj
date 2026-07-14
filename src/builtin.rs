@@ -42,6 +42,10 @@ pub const ALL: &[Builtin] = &[
         name: "secrets",
         describe: "シークレット参照の展開対象を確認する (dry-run)",
     },
+    Builtin {
+        name: "exec",
+        describe: "PATHのコマンドにシークレットを注入して実行する",
+    },
 ];
 
 pub fn find(name: &str) -> Option<&'static Builtin> {
@@ -101,6 +105,19 @@ haj config — 設定の実効値と、その出所を見る。
 token は値を出さない。設定されているかと、どこから来たかだけを出す。",
             target = crate::selfupgrade::DEFAULT_TARGET
         ),
+
+        "exec" => "\
+haj exec <プログラム> [引数...] — PATH のコマンドにシークレットを注入して実行する。
+
+探索は通さない。「注入は欲しいが、haj のコマンドにするほどではない」一回きりの
+実行のためにある (op run / doppler run の位置)。展開の規則はサブコマンド実行と同じで、
+--secret / --env / --secretfile も HAJ_SECRETS=1 の走査も同様に効く。
+
+  haj --secret DB_HOST=vault://avap/data/db/host exec sh -c 'mysql -h $DB_HOST'
+
+シェルの変数展開 ($VAR) が要るなら、明示的に sh -c を書くこと。haj は文字列を
+シェルに包まない。HAJ_ROOT / HAJ_NAME / HAJ_PROJECT は渡さない。詳細は SPEC.md §9.2。"
+            .to_string(),
 
         "selfupgrade" => selfupgrade::long_help(),
 

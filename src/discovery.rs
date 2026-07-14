@@ -282,7 +282,14 @@ pub fn is_valid_name(name: &str) -> bool {
 pub fn is_reserved(name: &str) -> bool {
     matches!(
         name,
-        "help" | "commands" | "which" | "config" | "selfupgrade" | "secrets" | "__complete"
+        "help"
+            | "commands"
+            | "which"
+            | "config"
+            | "exec"
+            | "selfupgrade"
+            | "secrets"
+            | "__complete"
     )
 }
 
@@ -300,7 +307,8 @@ fn path_dirs() -> Vec<PathBuf> {
         .unwrap_or_default()
 }
 
-fn find_in_path(exe: &str) -> Option<PathBuf> {
+/// PATH からそのままの名前で探す。`haj exec`(§9.2)が使う。
+pub fn find_in_path(exe: &str) -> Option<PathBuf> {
     path_dirs()
         .into_iter()
         .map(|d| d.join(exe))
