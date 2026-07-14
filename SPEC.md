@@ -368,6 +368,7 @@ hook_timeout_ms = 2000
 | `hook_timeout_ms` | `HAJ_HOOK_TIMEOUT_MS` | `2000` | 規約フックのタイムアウト |
 | `op_cmd` | `HAJ_OP_CMD` | `op` | op 参照の解決に使う CLI(§10) |
 | `vault_cmd` | `HAJ_VAULT_CMD` | `vault` | vault 参照の解決に使う CLI(avap は `bao` に差し替える)(§10) |
+| `vault_login` | `HAJ_VAULT_LOGIN` | (無し) | 未ログイン時に自動実行する `login` の引数(§10.4)。**書いてあること自体がオプトイン** |
 | `token` | `HAJ_TOKEN` | (無し) | `selfupgrade` が使う GitLab トークン |
 | `gitlab` | `HAJ_GITLAB` | `https://gitlab.avaper.day` | GitLab インスタンス |
 | `project_id` | `HAJ_PROJECT_ID` | `788` | haj のプロジェクト ID |
@@ -531,6 +532,23 @@ stdlib だけで解決する。
 
 CLI は差し替えられる(§8.3): `HAJ_OP_CMD` / 設定 `op_cmd`(既定 `op`)、
 `HAJ_VAULT_CMD` / 設定 `vault_cmd`(既定 `vault`。avap は `bao`)。
+
+**vault の自動ログイン(任意)**: 設定 `vault_login`(環境変数 `HAJ_VAULT_LOGIN`)に
+`login` へ渡す引数を書いておくと、未ログインのとき(`$HAJ_VAULT_CMD token lookup` が
+非 0)に限り、解決の前に `$HAJ_VAULT_CMD login <引数>` を**端末を継いで**実行する。
+
+```
+# ~/.config/haj/config
+vault_cmd   = bao
+vault_login = -method=oidc -path=id-avap-keycloak role=direct callbackmode=direct
+```
+
+- **書いてあること自体がオプトイン。** 未設定なら何もしない(解決が vault 自身の
+  エラーで fail-fast するのは今まで通り)
+- ログイン状態の確認は 1 プロセスにつき 1 回だけ
+- 引数は空白区切りで分割する(引用符やエスケープは解釈しない)
+- **CI に書かないこと。** OIDC ログインはブラウザと人を待つ。CI は `VAULT_TOKEN` 等で
+  認証済みの前提であり、`token lookup` が通るので login は走らない
 
 - **タイムアウトは設けない。** op のタッチ認証など、人を待つ場面が正当にある。
   規約フックの 2 秒とは別物。

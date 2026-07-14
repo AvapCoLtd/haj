@@ -13,6 +13,7 @@
 use std::env;
 use std::io::Write;
 use std::process::{Command as Proc, Stdio};
+use std::sync::OnceLock;
 
 /// 展開は明示のオプトイン。clone した直後のリポジトリで勝手に金庫が開く、
 /// という事故を防ぐため、既定では何もしない。
@@ -119,6 +120,7 @@ fn vault_template(value: &str) -> Result<String, String> {
 /// KV v2 の API パス(template の書き方)とみなし、mount と相対パスに読み替える。
 fn vault_fetch(path: &[&str], field: &str) -> Result<String, String> {
     let cli = cli_for("HAJ_VAULT_CMD", "vault_cmd", "vault");
+    ensure_vault_login(&cli)?;
     let mut proc = Proc::new(&cli);
     proc.args(["kv", "get", &format!("-field={field}")]);
     if path.len() >= 3 && path[1] == "data" {
@@ -128,6 +130,55 @@ fn vault_fetch(path: &[&str], field: &str) -> Result<String, String> {
         proc.arg(path.join("/"));
     }
     run(proc, &cli, None)
+}
+
+/// vault のログイン状態はプロセスで一度だけ確かめる。参照が何個あっても
+/// `token lookup` と `login` が二度走らないように。
+static VAULT_LOGIN: OnceLock<Result<(), String>> = OnceLock::new();
+
+/// 未ログインなら、設定 `vault_login` の引数で `login` を実行してから解決に進む
+/// (SPEC §10.4)。**書いてあること自体がオプトイン。** 未設定なら何もしない —
+/// 解決が vault 自身のエラーで fail-fast するのは今まで通り。
+///
+/// CI は VAULT_TOKEN 等で認証済みの前提(`token lookup` が通る)なので login は
+/// 走らない。vault_login を CI に書いてはならない(OIDC はブラウザと人を待つ)。
+fn ensure_vault_login(cli: &str) -> Result<(), String> {
+    VAULT_LOGIN
+        .get_or_init(|| {
+            let logged_in = Proc::new(cli)
+                .args(["token", "lookup"])
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false);
+            if logged_in {
+                return Ok(());
+            }
+            let Some((args, _)) =
+                crate::config::Config::load().get_opt("HAJ_VAULT_LOGIN", "vault_login")
+            else {
+                return Ok(()); // オプトインされていない
+            };
+            let args: Vec<&str> = args.split_whitespace().collect();
+            eprintln!(
+                "haj: vault にログインします: {cli} login {}",
+                args.join(" ")
+            );
+            // 端末を継ぐ。OIDC はブラウザと人を待つので、ここにタイムアウトは無い。
+            let status = Proc::new(cli)
+                .arg("login")
+                .args(&args)
+                .status()
+                .map_err(|e| format!("{cli} login を実行できません: {e}"))?;
+            if status.success() {
+                Ok(())
+            } else {
+                Err(format!("{cli} login が失敗しました"))
+            }
+        })
+        .clone()
 }
 
 /// op は書式を解釈せず、値ごと `op inject` に渡す。埋め込みの展開も

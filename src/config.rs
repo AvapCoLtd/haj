@@ -126,7 +126,7 @@ pub fn show() {
     let width = KEYS
         .iter()
         .map(|(_, k, _)| k.len())
-        .chain(std::iter::once("token".len()))
+        .chain(["token".len(), "vault_login".len()])
         .max()
         .unwrap_or(0);
 
@@ -137,6 +137,17 @@ pub fn show() {
             src.label(),
             width = width
         );
+    }
+
+    // 既定値を持たない任意設定。未ログイン時の自動ログイン引数(SPEC §10.4)。
+    match cfg.get_opt("HAJ_VAULT_LOGIN", "vault_login") {
+        Some((v, src)) => println!(
+            "  {:width$}  {v}   ({})",
+            "vault_login",
+            src.label(),
+            width = width
+        ),
+        None => println!("  {:width$}  (未設定)", "vault_login", width = width),
     }
 
     // トークンは値を出さない。設定されているかどうかと、どこから来たかだけ言う。

@@ -367,3 +367,89 @@ fn 規約フックには展開しない() {
     );
     assert!(!s.contains("expanded"), "フックに展開が漏れている:\n{s}");
 }
+
+/// 状態を持つ偽 vault。`token lookup` はログイン済みのときだけ 0、
+/// `login` は引数を記録してログイン済みにし、`kv get` はログイン済みのときだけ答える。
+fn stateful_vault(sb: &Sandbox) -> std::path::PathBuf {
+    let state = sb.dir.join("vault-state");
+    let login_args = sb.dir.join("login-args");
+    sb.exe(
+        "bin/vault-login",
+        &format!(
+            "#!/bin/sh\ncase \"$1\" in\n  token) [ -f \"{state}\" ] && exit 0 || exit 2 ;;\n  login) shift; printf '%s ' \"$@\" > \"{login}\"; touch \"{state}\"; exit 0 ;;\n  kv) [ -f \"{state}\" ] || exit 2; printf 's3cr3t\\n' ;;\nesac\n",
+            state = state.display(),
+            login = login_args.display()
+        ),
+    )
+}
+
+const LOGIN_ARGS: &str = "-method=oidc -path=id-avap-keycloak role=direct callbackmode=direct";
+
+#[test]
+fn 未ログインならvault_loginの引数でログインしてから解決する() {
+    let sb = Sandbox::new("autologin");
+    let cp = sb.show_command();
+    let vault = stateful_vault(&sb);
+
+    let out = sb.haj(
+        &cp,
+        &["show"],
+        &[
+            ("HAJ_SECRETS", "1"),
+            ("HAJ_VAULT_CMD", vault.to_str().unwrap()),
+            ("HAJ_VAULT_LOGIN", LOGIN_ARGS),
+            ("HAJ_T_VALUE", "vault://avap/data/hoge/fuga"),
+        ],
+    );
+    assert!(out.status.success(), "stderr: {}", stderr(&out));
+    assert_eq!(stdout(&out).trim(), "s3cr3t");
+
+    // login には設定の引数がそのまま渡っている
+    let args = fs::read_to_string(sb.dir.join("login-args")).unwrap();
+    assert_eq!(args.trim(), LOGIN_ARGS);
+}
+
+#[test]
+fn vault_loginが無ければloginは走らず解決の失敗で止まる() {
+    let sb = Sandbox::new("nologin");
+    let cp = sb.mark_command();
+    let vault = stateful_vault(&sb);
+
+    let out = sb.haj(
+        &cp,
+        &["mark"],
+        &[
+            ("HAJ_SECRETS", "1"),
+            ("HAJ_VAULT_CMD", vault.to_str().unwrap()),
+            ("HAJ_T_VALUE", "vault://avap/data/hoge/fuga"),
+        ],
+    );
+    assert_eq!(out.status.code(), Some(1));
+    assert!(!sb.dir.join("login-args").exists(), "loginが勝手に走った");
+    assert!(!sb.dir.join("ran").exists(), "本体が実行されてしまった");
+}
+
+#[test]
+fn ログイン済みならloginを叩かない() {
+    let sb = Sandbox::new("loggedin");
+    let cp = sb.show_command();
+    let vault = stateful_vault(&sb);
+    fs::write(sb.dir.join("vault-state"), "").unwrap(); // ログイン済みにしておく
+
+    let out = sb.haj(
+        &cp,
+        &["show"],
+        &[
+            ("HAJ_SECRETS", "1"),
+            ("HAJ_VAULT_CMD", vault.to_str().unwrap()),
+            ("HAJ_VAULT_LOGIN", LOGIN_ARGS),
+            ("HAJ_T_VALUE", "vault://avap/data/hoge/fuga"),
+        ],
+    );
+    assert!(out.status.success(), "stderr: {}", stderr(&out));
+    assert_eq!(stdout(&out).trim(), "s3cr3t");
+    assert!(
+        !sb.dir.join("login-args").exists(),
+        "ログイン済みなのにloginが走った"
+    );
+}
