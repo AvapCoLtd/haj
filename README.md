@@ -130,7 +130,7 @@ haj --version
 |---|---|---|---|
 | A. プロジェクト | `<リポジトリ>/.haj/commands/<名前>` | そのリポジトリの中だけ | チームで共有する、リポジトリ固有のタスク |
 | B. グローバル | `$PATH` の `haj-<名前>` | どこでも | 個人ツール、パッケージマネージャで配るもの |
-| C. エイリアス | `~/.config/haj/config` または `.haj/project` の `alias.<名前>` | どこでも / そのプロジェクト | 打鍵の短縮。1行の委譲(scripts 相当) |
+| C. エイリアス | `~/.config/haj/config` または `.haj/config` の `alias.<名前>` | どこでも / そのプロジェクト | 打鍵の短縮。1行の委譲(scripts 相当) |
 
 ### A. プロジェクトのコマンド(`.haj/commands/`)
 
@@ -223,13 +223,13 @@ $ haj wm up             # → haj -C ~/repos/webapp mig up
 - **補完も効く。** `haj web <TAB>` は移動先のプロジェクトのコマンドを補完し、
   `haj oci <TAB>` は `oci` 自身の補完に委譲される(`haj exec kubectl <TAB>` も同様)
 
-#### プロジェクト・エイリアス(`.haj/project` に書く)
+#### プロジェクト・エイリアス(`.haj/config` に書く)
 
-package.json の `scripts` に相当する「1行の委譲」は、リポジトリの `.haj/project` にも
+package.json の `scripts` に相当する「1行の委譲」は、リポジトリの `.haj/config` にも
 書ける。そのプロジェクトの中でだけ有効で、同名ならユーザー設定より**近い方が勝つ**。
 
 ```
-# .haj/project
+# .haj/config
 name = myapp
 alias.test = exec docker compose exec app vendor/bin/phpunit --testdox
 alias.test.desc = テストを流す(コンテナ内)
@@ -285,7 +285,7 @@ $ haj test        # → docker compose exec app vendor/bin/phpunit --testdox
 `haj setup` が生えてしまう。置いた本人以外は気づけない。`setup` や `reset` は破壊的なので、
 これは事故になる。
 
-境界と名前は `.haj/project` で宣言する(**無くてもよい**。既定で「境界」かつ「名前は
+境界と名前は `.haj/config` で宣言する(**無くてもよい**。既定で「境界」かつ「名前は
 ディレクトリ名」)。
 
 ```
@@ -337,10 +337,10 @@ echo "==> ${HAJ_PROJECT}: セットアップします"
 |---|---|
 | ユーザー設定 | `~/.config/haj/config` |
 | 個人用コマンド | `~/.config/haj/commands/` |
-| プロジェクト設定 | `<リポジトリ>/.haj/project` |
+| プロジェクト設定 | `<リポジトリ>/.haj/config` |
 | キャッシュ | `~/.cache/haj/` |
 
-形式は `.haj/project` と**同じ** `key = value`(`#` から行末はコメント、行末の `\` は継続)。
+形式は `.haj/config` と**同じ** `key = value`(`#` から行末はコメント、行末の `\` は継続)。
 設定ファイルの形式が2つあると「どっちがどっちだったか」を覚える羽目になるので、
 1つに揃えています。
 

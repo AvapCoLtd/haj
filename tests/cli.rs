@@ -49,7 +49,7 @@ impl Sandbox {
             .current_dir(cwd)
             .env("HAJ_COMMAND_PATH", command_path)
             .env("HAJ_NO_CACHE", "1") // テスト間でキャッシュを共有しない
-            .env("HOME", &self.dir) // ~/.haj を汚さない
+            .env("HOME", &self.dir) // ユーザーの設定を汚さない
             .output()
             .unwrap()
     }
@@ -387,7 +387,7 @@ fn root_falseなら親の共通コマンドも継承する() {
         "setup",
         &conforming("webのsetup", "", "", "true"),
     );
-    sb.write("mono/web/.haj/project", "name = web\nroot = false\n");
+    sb.write("mono/web/.haj/config", "name = web\nroot = false\n");
 
     let cp = sb.path("none");
     let out = stdout(&sb.haj(&sb.path("mono/web"), cp.to_str().unwrap(), &["__complete"]));
@@ -412,7 +412,7 @@ fn どのプロジェクトのコマンドかを一覧に出す() {
         "setup",
         &conforming("セットアップ", "", "", "true"),
     );
-    sb.write("proj/.haj/project", "name = example-app\n");
+    sb.write("proj/.haj/config", "name = example-app\n");
 
     let cp = sb.path("sys/commands");
     let out = stdout(&sb.haj(&sb.path("proj"), cp.to_str().unwrap(), &["help"]));
@@ -439,7 +439,7 @@ fn プロジェクト名は既定でディレクトリ名になる() {
         "setup",
         &conforming("セットアップ", "", "", "true"),
     );
-    // .haj/project を置いていない
+    // .haj/config を置いていない
 
     let cp = sb.path("none");
     let out = stdout(&sb.haj(&sb.path("myrepo"), cp.to_str().unwrap(), &["help"]));
@@ -583,7 +583,7 @@ fn 組み込みと同名のコマンドは置いても無視される() {
 //
 // 場所は XDG に従う。gitと同じ形 — リポジトリ側は .haj/(gitの .git/)、
 // ユーザー側は ~/.config/haj/(gitの ~/.config/git/config)。
-// 形式は .haj/project と同じ key = value(覚えることを1つに保つ)。
+// 形式は .haj/config と同じ key = value(覚えることを1つに保つ)。
 
 #[test]
 fn 個人用コマンドはxdgの下から拾う() {
@@ -728,7 +728,7 @@ fn 対象プロジェクトを環境変数で渡す() {
         "setup",
         "#!/bin/sh\necho \"project=$HAJ_PROJECT dir=$HAJ_PROJECT_DIR\"\n",
     );
-    sb.write("proj/.haj/project", "name = example-app\n");
+    sb.write("proj/.haj/config", "name = example-app\n");
 
     let cp = sb.path("none");
     let out = stdout(&sb.haj(&sb.path("proj"), cp.to_str().unwrap(), &["setup"]));
@@ -749,7 +749,7 @@ fn which_allで隠れている定義まで見える() {
         "setup",
         &conforming("固有のsetup", "", "", "true"),
     );
-    sb.write("proj/.haj/project", "name = myproj\n");
+    sb.write("proj/.haj/config", "name = myproj\n");
 
     let cp = sb.path("sys/commands");
     let out = stdout(&sb.haj(
@@ -1061,7 +1061,7 @@ fn プロジェクトのhaj_projectにエイリアスを書ける() {
         &conforming("デプロイ", "", "", "echo DEPLOYED $1"),
     );
     sb.write(
-        "proj/.haj/project",
+        "proj/.haj/config",
         "name = myapp\nalias.t = deploy v9\nalias.t.desc = テストを流す\n",
     );
 
@@ -1104,7 +1104,7 @@ fn プロジェクトのエイリアスはユーザー設定より勝つ() {
         "deploy",
         &conforming("デプロイ", "", "", "echo DEPLOYED $1"),
     );
-    sb.write("proj/.haj/project", "alias.t = deploy PROJECT\n");
+    sb.write("proj/.haj/config", "alias.t = deploy PROJECT\n");
 
     let out = haj_with_config(&sb, &sb.path("proj"), &["t"]);
     assert_eq!(
@@ -1117,7 +1117,7 @@ fn プロジェクトのエイリアスはユーザー設定より勝つ() {
 #[test]
 fn プロジェクトエイリアスでも予約語は奪えない() {
     let sb = Sandbox::new("alias-proj-reserved");
-    sb.write("proj/.haj/project", "alias.help = sh 'echo HIJACKED'\n");
+    sb.write("proj/.haj/config", "alias.help = sh 'echo HIJACKED'\n");
     std::fs::create_dir_all(sb.path("proj/.haj")).unwrap();
 
     let out = haj_with_config(&sb, &sb.path("proj"), &["help"]);
@@ -1125,6 +1125,70 @@ fn プロジェクトエイリアスでも予約語は奪えない() {
     let s = stdout(&out);
     assert!(!s.contains("HIJACKED"), "helpが奪われた:\n{s}");
     assert!(s.contains("haj自身"), "普通のhelpが出ていない:\n{s}");
+}
+
+#[test]
+fn プロジェクトのconfigから接続先の鍵は読まれない() {
+    // clone したリポジトリに secrets.* / selfupgrade.* / command_path を書かれても
+    // 効かない(ホワイトリスト: name / root / alias.* だけ)。SPEC §2.2。
+    let sb = Sandbox::new("proj-config-whitelist");
+    sb.write(
+        "proj/.haj/config",
+        "secrets.vault_addr = https://evil.example\ncommand_path = /evil\n",
+    );
+
+    let out = haj_with_config(&sb, &sb.path("proj"), &["config"]);
+    assert!(out.status.success());
+    let s = stdout(&out);
+    assert!(
+        !s.contains("evil"),
+        "プロジェクト config が実効値に混ざった:\n{s}"
+    );
+}
+
+#[test]
+fn 旧home_haj_commandsはもう読まれない() {
+    let sb = Sandbox::new("no-legacy");
+    // HOME = sb.dir なので、これは ~/.haj/commands/old
+    sb.command(".haj", "old", &conforming("旧置き場", "", "", "echo OLD"));
+
+    let cp = sb.path("nonexistent");
+    let out = sb.haj(&sb.dir, cp.to_str().unwrap(), &["old"]);
+    assert_eq!(
+        out.status.code(),
+        Some(127),
+        "旧 ~/.haj/commands が読まれている"
+    );
+}
+
+#[test]
+fn execとshにもhaj_projectが渡る() {
+    let sb = Sandbox::new("sh-project");
+    sb.write("proj/.haj/config", "name = myapp\n");
+
+    let cp = sb.path("nonexistent");
+    let out = sb.haj(
+        &sb.path("proj"),
+        cp.to_str().unwrap(),
+        &["sh", "--", "echo", "P=$HAJ_PROJECT"],
+    );
+    assert_eq!(
+        stdout(&out).trim(),
+        "P=myapp",
+        "sh に HAJ_PROJECT が渡らない"
+    );
+
+    // プロジェクトの外では空(呼び出し元の環境の値も継がない)
+    let out = sb.haj(
+        &sb.dir,
+        cp.to_str().unwrap(),
+        &["sh", "--", "echo", "P=$HAJ_PROJECT"],
+    );
+    assert_eq!(
+        stdout(&out).trim(),
+        "P=",
+        "プロジェクト外で HAJ_PROJECT が残っている"
+    );
 }
 
 #[test]

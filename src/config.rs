@@ -4,7 +4,7 @@
 //! 置くのは不整合。**git と同じ形**になる — リポジトリ側は `.haj/`(git の `.git/`)、
 //! ユーザー側は `~/.config/haj/`(git の `~/.config/git/config`)。
 //!
-//! 形式は `.haj/project` と**同じ** `key = value`。設定ファイルの形式が2つあると、
+//! 形式は `.haj/config` と**同じ** `key = value`。設定ファイルの形式が2つあると、
 //! 「どっちがどっちだったか」を覚える羽目になる。入れ子が要るような項目は今のところ
 //! 無く、信頼済みツリーの一覧のような列は direnv 方式で別ファイルにすればよい。
 //! これで依存クレートをゼロに保てる(YAML/TOML はパーサが要る)。
@@ -68,7 +68,7 @@ impl Config {
     }
 
     /// エイリアス(SPEC §2.7)の**ユーザー設定スコープ**。
-    /// プロジェクトの `.haj/project` も含めた解決は aliases::lookup が行う
+    /// プロジェクトの `.haj/config` も含めた解決は aliases::lookup が行う
     /// (近いスコープが勝つ)。
     pub fn alias(&self, name: &str) -> Option<String> {
         self.map
@@ -308,13 +308,13 @@ pub fn show() {
 
     println!();
     println!("環境変数 > 設定ファイル > 既定値 の順で決まります。");
-    println!("形式は key = value ('#' から行末はコメント)。.haj/project と同じです。");
+    println!("形式は key = value ('#' から行末はコメント)。.haj/config と同じです。");
 }
 
 /// `key = value` を並べただけの形式。`#` から行末はコメント。
 /// **行末の `\` は継続**(シェルや git config と同じ)。継続行は空白1つで繋がる。
 ///
-/// `.haj/project` と共用する。値は前後の空白と引用符を落とすだけで、
+/// `.haj/config` と共用する。値は前後の空白と引用符を落とすだけで、
 /// エスケープも型も無い。これ以上のものが要るなら、それは設定ファイルではなく
 /// コマンドとして書くべきものだと考える。
 pub fn parse_kv(content: &str) -> HashMap<String, String> {

@@ -108,7 +108,7 @@ haj config — 設定の実効値と、その出所を見る。
 
   ~/.config/haj/config  (XDG。$XDG_CONFIG_HOME を見る)
 
-形式は key = value。'#' から行末はコメント。.haj/project と同じ形式なので、
+形式は key = value。'#' から行末はコメント。.haj/config と同じ形式なので、
 覚えることは1つで済む。
 
   selfupgrade.token = vault://<マウント>/<パス>/token

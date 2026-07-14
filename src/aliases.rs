@@ -2,7 +2,7 @@
 //!
 //! 定義できる場所は2つで、近いスコープが勝つ:
 //!
-//!   1. プロジェクトの `.haj/project`(カレントから遡って近い順)
+//!   1. プロジェクトの `.haj/config`(カレントから遡って近い順)
 //!   2. ユーザー設定 `~/.config/haj/config`
 //!
 //! プロジェクト側に書けるのは package.json の scripts に相当する「1行の委譲」の
@@ -45,11 +45,11 @@ impl Alias {
     }
 }
 
-/// プロジェクト・スコープの定義(`.haj/project` の alias.*)を近い順に返す。
+/// プロジェクト・スコープの定義(`.haj/config` の alias.*)を近い順に返す。
 fn project_scopes() -> Vec<(std::collections::HashMap<String, String>, Origin)> {
     let mut scopes = Vec::new();
     for (tree, origin) in crate::discovery::project_trees() {
-        if let Ok(s) = std::fs::read_to_string(tree.join("project")) {
+        if let Ok(s) = std::fs::read_to_string(tree.join("config")) {
             scopes.push((crate::config::parse_kv(&s), origin));
         }
     }
