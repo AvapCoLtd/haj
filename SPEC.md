@@ -367,8 +367,9 @@ hook_timeout_ms = 2000
 | `command_path` | `HAJ_COMMAND_PATH` | `/usr/local/lib/haj/commands` | システム共通のコマンド置き場(`:` 区切り) |
 | `hook_timeout_ms` | `HAJ_HOOK_TIMEOUT_MS` | `2000` | 規約フックのタイムアウト |
 | `op_cmd` | `HAJ_OP_CMD` | `op` | op 参照の解決に使う CLI(§10) |
-| `vault_cmd` | `HAJ_VAULT_CMD` | `vault` | vault 参照の解決に使う CLI(avap は `bao` に差し替える)(§10) |
-| `vault_login` | `HAJ_VAULT_LOGIN` | (無し) | 未ログイン時に自動実行する `login` の引数(§10.4)。**書いてあること自体がオプトイン** |
+| `vault_cmd` | `HAJ_VAULT_CMD` | `bao` | vault 参照の解決に使う CLI(§10) |
+| `vault_addr` | `VAULT_ADDR` | `https://vault.avap.plus` | vault サーバ。環境の `VAULT_ADDR` / `BAO_ADDR` が優先(§10.4) |
+| `vault_login` | `HAJ_VAULT_LOGIN` | `-method=oidc -path=id-avap-keycloak` | 未ログイン時に自動実行する `login` の引数(§10.4)。`off` で無効化 |
 | `token` | `HAJ_TOKEN` | (無し) | `selfupgrade` が使う GitLab トークン |
 | `gitlab` | `HAJ_GITLAB` | `https://gitlab.avaper.day` | GitLab インスタンス |
 | `project_id` | `HAJ_PROJECT_ID` | `788` | haj のプロジェクト ID |
@@ -531,24 +532,28 @@ stdlib だけで解決する。
 | vault | `vault kv get -field=<フィールド> [-mount=<マウント>] <パス>`。パスの2セグメント目が `data` なら KV v2 の API パスとみなし、`-mount=<先頭>` と相対パスに読み替える |
 
 CLI は差し替えられる(§8.3): `HAJ_OP_CMD` / 設定 `op_cmd`(既定 `op`)、
-`HAJ_VAULT_CMD` / 設定 `vault_cmd`(既定 `vault`。avap は `bao`)。
+`HAJ_VAULT_CMD` / 設定 `vault_cmd`(既定 `bao`)。
 
-**vault の自動ログイン(任意)**: 設定 `vault_login`(環境変数 `HAJ_VAULT_LOGIN`)に
-`login` へ渡す引数を書いておくと、未ログインのとき(`$HAJ_VAULT_CMD token lookup` が
-非 0)に限り、解決の前に `$HAJ_VAULT_CMD login <引数>` を**端末を継いで**実行する。
+**vault サーバ**: 環境に `VAULT_ADDR` / `BAO_ADDR` があればそれを尊重する。無ければ
+設定 `vault_addr`(既定 `https://vault.avap.plus`)を両方の名前で CLI に渡す
+(bao は `BAO_ADDR` を先に見る)。
+
+**vault の自動ログイン**: 未ログインのとき(`token lookup` が非 0)に限り、解決の前に
+`login` を**端末を継いで**実行する。引数は設定 `vault_login`(環境変数
+`HAJ_VAULT_LOGIN`)から取り、既定は `-method=oidc -path=id-avap-keycloak`。
 
 ```
-# ~/.config/haj/config
-vault_cmd   = bao
+# ~/.config/haj/config — 既定から変えたいときだけ書く
 vault_login = -method=oidc -path=id-avap-keycloak role=direct callbackmode=direct
 ```
 
-- **書いてあること自体がオプトイン。** 未設定なら何もしない(解決が vault 自身の
-  エラーで fail-fast するのは今まで通り)
-- ログイン状態の確認は 1 プロセスにつき 1 回だけ
+- `vault_login = off` で無効化する。そのときは解決が vault 自身のエラーで
+  fail-fast する(従来どおり)
+- ログイン状態の確認は 1 プロセスにつき 1 回だけ。ログイン済みなら何も起きない
 - 引数は空白区切りで分割する(引用符やエスケープは解釈しない)
-- **CI に書かないこと。** OIDC ログインはブラウザと人を待つ。CI は `VAULT_TOKEN` 等で
-  認証済みの前提であり、`token lookup` が通るので login は走らない
+- **認証しない CI で vault 参照を使うなら `HAJ_VAULT_LOGIN=off` を置くこと。**
+  OIDC ログインはブラウザと人を待つ。`VAULT_TOKEN` 等で認証済みの CI では
+  `token lookup` が通るので login は走らない
 
 - **タイムアウトは設けない。** op のタッチ認証など、人を待つ場面が正当にある。
   規約フックの 2 秒とは別物。

@@ -15,6 +15,11 @@ use std::io::Write;
 use std::process::{Command as Proc, Stdio};
 use std::sync::OnceLock;
 
+/// vault サーバの既定。環境に VAULT_ADDR / BAO_ADDR があればそちらを尊重する。
+pub const DEFAULT_VAULT_ADDR: &str = "https://vault.avap.plus";
+/// 未ログイン時に自動実行する `login` の既定引数。`off` で無効化。
+pub const DEFAULT_VAULT_LOGIN: &str = "-method=oidc -path=id-avap-keycloak";
+
 /// 展開は明示のオプトイン。clone した直後のリポジトリで勝手に金庫が開く、
 /// という事故を防ぐため、既定では何もしない。
 pub fn enabled() -> bool {
@@ -119,9 +124,9 @@ fn vault_template(value: &str) -> Result<String, String> {
 /// `vault kv get` で1フィールドを取る。パスの2セグメント目が `data` なら
 /// KV v2 の API パス(template の書き方)とみなし、mount と相対パスに読み替える。
 fn vault_fetch(path: &[&str], field: &str) -> Result<String, String> {
-    let cli = cli_for("HAJ_VAULT_CMD", "vault_cmd", "vault");
+    let cli = cli_for("HAJ_VAULT_CMD", "vault_cmd", "bao");
     ensure_vault_login(&cli)?;
-    let mut proc = Proc::new(&cli);
+    let mut proc = vault_proc(&cli);
     proc.args(["kv", "get", &format!("-field={field}")]);
     if path.len() >= 3 && path[1] == "data" {
         proc.arg(format!("-mount={}", path[0]));
@@ -132,20 +137,37 @@ fn vault_fetch(path: &[&str], field: &str) -> Result<String, String> {
     run(proc, &cli, None)
 }
 
+/// vault CLI のプロセスを作る。サーバは、環境に VAULT_ADDR / BAO_ADDR が
+/// あればそちらを尊重し、無ければ設定 `vault_addr`(既定 vault.avap.plus)を
+/// 両方の名前で渡す(bao は BAO_ADDR を先に見る)。
+fn vault_proc(cli: &str) -> Proc {
+    let mut proc = Proc::new(cli);
+    let has_addr = ["BAO_ADDR", "VAULT_ADDR"]
+        .iter()
+        .any(|k| env::var(k).map(|v| !v.is_empty()).unwrap_or(false));
+    if !has_addr {
+        let (addr, _) =
+            crate::config::Config::load().get("VAULT_ADDR", "vault_addr", DEFAULT_VAULT_ADDR);
+        proc.env("VAULT_ADDR", &addr).env("BAO_ADDR", &addr);
+    }
+    proc
+}
+
 /// vault のログイン状態はプロセスで一度だけ確かめる。参照が何個あっても
 /// `token lookup` と `login` が二度走らないように。
 static VAULT_LOGIN: OnceLock<Result<(), String>> = OnceLock::new();
 
 /// 未ログインなら、設定 `vault_login` の引数で `login` を実行してから解決に進む
-/// (SPEC §10.4)。**書いてあること自体がオプトイン。** 未設定なら何もしない —
-/// 解決が vault 自身のエラーで fail-fast するのは今まで通り。
+/// (SPEC §10.4)。既定は avap の OIDC(`-method=oidc -path=id-avap-keycloak`)。
+/// `off` で無効化 — そのときは解決が vault 自身のエラーで fail-fast する。
 ///
 /// CI は VAULT_TOKEN 等で認証済みの前提(`token lookup` が通る)なので login は
-/// 走らない。vault_login を CI に書いてはならない(OIDC はブラウザと人を待つ)。
+/// 走らない。認証しない CI で vault 参照を使うなら `HAJ_VAULT_LOGIN=off` を置くこと
+/// (OIDC はブラウザと人を待つ)。
 fn ensure_vault_login(cli: &str) -> Result<(), String> {
     VAULT_LOGIN
         .get_or_init(|| {
-            let logged_in = Proc::new(cli)
+            let logged_in = vault_proc(cli)
                 .args(["token", "lookup"])
                 .stdin(Stdio::null())
                 .stdout(Stdio::null())
@@ -156,18 +178,21 @@ fn ensure_vault_login(cli: &str) -> Result<(), String> {
             if logged_in {
                 return Ok(());
             }
-            let Some((args, _)) =
-                crate::config::Config::load().get_opt("HAJ_VAULT_LOGIN", "vault_login")
-            else {
-                return Ok(()); // オプトインされていない
-            };
+            let (args, _) = crate::config::Config::load().get(
+                "HAJ_VAULT_LOGIN",
+                "vault_login",
+                DEFAULT_VAULT_LOGIN,
+            );
+            if args == "off" {
+                return Ok(()); // 自動ログインは明示的に無効化されている
+            }
             let args: Vec<&str> = args.split_whitespace().collect();
             eprintln!(
                 "haj: vault にログインします: {cli} login {}",
                 args.join(" ")
             );
             // 端末を継ぐ。OIDC はブラウザと人を待つので、ここにタイムアウトは無い。
-            let status = Proc::new(cli)
+            let status = vault_proc(cli)
                 .arg("login")
                 .args(&args)
                 .status()

@@ -103,7 +103,17 @@ pub const KEYS: &[(&str, &str, &str)] = &[
     ),
     ("HAJ_HOOK_TIMEOUT_MS", "hook_timeout_ms", "2000"),
     ("HAJ_OP_CMD", "op_cmd", "op"),
-    ("HAJ_VAULT_CMD", "vault_cmd", "vault"),
+    ("HAJ_VAULT_CMD", "vault_cmd", "bao"),
+    (
+        "VAULT_ADDR",
+        "vault_addr",
+        crate::secrets::DEFAULT_VAULT_ADDR,
+    ),
+    (
+        "HAJ_VAULT_LOGIN",
+        "vault_login",
+        crate::secrets::DEFAULT_VAULT_LOGIN,
+    ),
     ("HAJ_GITLAB", "gitlab", "https://gitlab.avaper.day"),
     ("HAJ_PROJECT_ID", "project_id", "788"),
     ("HAJ_TARGET", "target", "x86_64-unknown-linux-musl"),
@@ -126,7 +136,7 @@ pub fn show() {
     let width = KEYS
         .iter()
         .map(|(_, k, _)| k.len())
-        .chain(["token".len(), "vault_login".len()])
+        .chain(std::iter::once("token".len()))
         .max()
         .unwrap_or(0);
 
@@ -137,17 +147,6 @@ pub fn show() {
             src.label(),
             width = width
         );
-    }
-
-    // 既定値を持たない任意設定。未ログイン時の自動ログイン引数(SPEC §10.4)。
-    match cfg.get_opt("HAJ_VAULT_LOGIN", "vault_login") {
-        Some((v, src)) => println!(
-            "  {:width$}  {v}   ({})",
-            "vault_login",
-            src.label(),
-            width = width
-        ),
-        None => println!("  {:width$}  (未設定)", "vault_login", width = width),
     }
 
     // トークンは値を出さない。設定されているかどうかと、どこから来たかだけ言う。
