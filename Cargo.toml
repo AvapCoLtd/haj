@@ -1,0 +1,22 @@
+[package]
+name = "haj"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.74"
+description = "サブコマンドを探索して実行する、プロジェクトごとに中身が変わるジョブランナー"
+license = "proprietary"
+repository = "https://gitlab.avaper.day/avap/free-study/haj"
+
+# 依存クレートは意図的にゼロ。
+#
+# hajがやるのはディレクトリの探索と exec だけで、CPUの仕事は無い。ここに serde や
+# clap を持ち込むと、ビルド時間と監査対象とサプライチェーンのリスクだけが増えて
+# 得るものが無い。標準ライブラリで足りる範囲に収めることを設計上の制約とする。
+[dependencies]
+
+[profile.release]
+opt-level = "z"     # hajの実行時間はexecで決まるので、速度より小ささを取る
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

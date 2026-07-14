@@ -1,0 +1,38 @@
+#compdef haj
+# hajのzsh補完。
+#
+# 候補をここに書かない。コアの `haj __complete` に聞くだけ。
+#   haj __complete              → "名前\t説明" を列挙(探索で見つかった全コマンド)
+#   haj __complete <名前> <語...> → そのコマンドの --haj-complete へ転送
+#
+# よってサブコマンドを足しても、このファイルを触る必要はない。
+
+_haj() {
+  local -a cands
+  local line name desc
+
+  if (( CURRENT == 2 )); then
+    # コマンド名の補完。`名前\t説明` を zsh の `名前:説明` 形式へ直す。
+    for line in ${(f)"$(haj __complete 2>/dev/null)"}; do
+      name=${line%%$'\t'*}
+      desc=${line#*$'\t'}
+      cands+=("${name}:${desc}")
+    done
+    _describe -t commands 'haj コマンド' cands
+    return
+  fi
+
+  # 2語目以降は当該コマンドに聞く。カーソル直前までの入力済みの語を渡す。
+  cands=(${(f)"$(haj __complete ${words[2]} ${words[3,CURRENT-1]} 2>/dev/null)"})
+
+  # 丸括弧だけの1行は候補ではなく説明(SPEC.md 4.3)
+  if (( ${#cands} == 1 )) && [[ ${cands[1]} == \(*\) ]]; then
+    _message "${${cands[1]#\(}%\)}"
+    return
+  fi
+
+  (( ${#cands} )) || return 1
+  _describe -t values "haj ${words[2]}" cands
+}
+
+_haj "$@"

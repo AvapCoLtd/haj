@@ -1,93 +1,188 @@
 # haj
 
+**h**ack **a**pplication **j**ob — プロジェクトごとに中身が変わるジョブランナー。
 
+`haj` はサブコマンドを**持たない**。そこに置いてある実行可能ファイルを**探して**実行する。
+だから、リポジトリごとに使えるコマンドが違う、という状態が自然に成立する。
 
-## Getting started
+```console
+$ cd ~/repos/webapp && haj
+ hajコマンド (haj help <名前> で詳細):
+   web      基本版(webapp)の操作
+   ie         拡張版(example-app)の操作
+   mig        DBマイグレーション (status/up/down/create/edit)
+   xdebug     Xdebugの有効/無効を切り替え
 
-To make it easy for you to get started with GitLab, here's a list of recommended next steps.
+$ cd ~/repos/some-other-project && haj
+ hajコマンド (haj help <名前> で詳細):
+   deploy     このプロジェクトのデプロイ
+   seed       テストデータ投入
+```
 
-Already a pro? Just edit this README.md and make it your own. Want to make it easy? [Use the template at the bottom](#editing-this-readme)!
+同じ `haj` コマンドだが、出てくるものが違う。**リポジトリに置いたコマンドだけが、
+そのリポジトリで生える。**
 
-## Add your files
+## なぜ make / just / npm scripts ではないのか
 
-* [Create](https://docs.gitlab.com/user/project/repository/web_editor/#create-a-file) or [upload](https://docs.gitlab.com/user/project/repository/web_editor/#upload-a-file) files
-* [Add files using the command line](https://docs.gitlab.com/topics/git/add_files/#add-files-to-a-git-repository) or push an existing Git repository with the following command:
+- **一覧が信用できる。** `haj help` はコマンドを1本ずつ叩いて説明を集める。手で書いた
+  一覧が実態と食い違う、ということが起こらない。
+- **補完が勝手についてくる。** サブコマンドが `--haj-complete` に答えれば、TAB 補完に
+  自動で載る。補完スクリプトを書き足す必要がない。
+- **タスクを宣言型ファイルに閉じ込めない。** 現実のタスクは分岐と冪等性判定の塊で、
+  TOML/YAML の1行には収まらない。haj のタスクは**普通の実行ファイル**なので、
+  シェルでも Rust でも PHP でも書ける。
+- **共通コマンドと固有コマンドが両立する。** 全社共通の `bao-login` は全リポジトリで
+  使えて、`deploy` はそのリポジトリでだけ生える。同名なら手前が勝つ。
+
+## インストール
+
+### バイナリ (Linux x86_64)
+
+依存ゼロの静的バイナリ。glibc も bash も要らない(alpine でも動く)。
+
+```sh
+VERSION=0.1.0
+TOKEN=<あなたのGitLabトークン>   # このリポジトリはprivateなので必要
+curl -fsSL --header "PRIVATE-TOKEN: $TOKEN" \
+  "https://gitlab.avaper.day/api/v4/projects/788/packages/generic/haj/${VERSION}/haj-x86_64-unknown-linux-musl.tar.gz" \
+  | tar xz
+sudo install -m 755 haj /usr/local/bin/haj
+```
+
+`install.sh` を使うと上記を自動でやる。
+
+```sh
+HAJ_TOKEN=<トークン> ./install.sh            # 最新版
+HAJ_TOKEN=<トークン> ./install.sh 0.1.0      # 版を指定
+```
+
+### 他のプラットフォーム
+
+CI は Linux x86_64 のみをビルドする。それ以外は手元でビルドしてほしい。
+
+```sh
+cargo build --release
+install -m 755 target/release/haj /usr/local/bin/haj
+```
+
+Rust さえ入っていれば macOS でも Arm でもそのまま通る(依存クレートはゼロ)。
+
+## 使い方
 
 ```
-cd existing_repo
-git remote add origin https://gitlab.avaper.day/avap/free-study/haj.git
-git branch -M master
-git push -uf origin master
+haj <コマンド> [引数...]     コマンドを実行する
+haj                        コマンド一覧
+haj help <名前>             そのコマンドの詳しい使い方
+haj which <名前>            探索で勝っている実行ファイルのパス
+haj commands               一覧を機械可読で (名前 TAB パス TAB 説明)
+haj --version
 ```
 
-## Integrate with your tools
+## コマンドを追加する
 
-* [Set up project integrations](https://gitlab.avaper.day/avap/free-study/haj/-/settings/integrations)
+**実行可能ファイルを置くだけ。** 登録も設定ファイルも要らない。
 
-## Collaborate with your team
+```sh
+mkdir -p .haj/commands
+cat > .haj/commands/deploy <<'EOF'
+#!/bin/bash
+set -euo pipefail
 
-* [Invite team members and collaborators](https://docs.gitlab.com/user/project/members/)
-* [Create a new merge request](https://docs.gitlab.com/user/project/merge_requests/creating_merge_requests/)
-* [Automatically close issues from merge requests](https://docs.gitlab.com/user/project/issues/managing_issues/#closing-issues-automatically)
-* [Enable merge request approvals](https://docs.gitlab.com/user/project/merge_requests/approvals/)
-* [Set auto-merge](https://docs.gitlab.com/user/project/merge_requests/auto_merge/)
+case "${1:-}" in
+  --haj-describe) echo "本番へデプロイする"; exit 0 ;;
+  --haj-help)     echo "haj deploy <staging|production>"; exit 0 ;;
+  --haj-complete) shift; [ $# -eq 0 ] && printf '%s\n' staging production; exit 0 ;;
+esac
 
-## Test and Deploy
+echo "deploying to ${1:?環境を指定してください}..."
+EOF
+chmod +x .haj/commands/deploy
+```
 
-Use the built-in continuous integration in GitLab.
+これで `haj deploy` が使え、`haj` の一覧に説明が出て、`haj deploy <TAB>` が
+`staging` / `production` を補完する。**ヘルプにも補完にも1行も書き足していない。**
 
-* [Get started with GitLab CI/CD](https://docs.gitlab.com/ci/quick_start/)
-* [Analyze your code for known vulnerabilities with Static Application Security Testing (SAST)](https://docs.gitlab.com/user/application_security/sast/)
-* [Deploy to Kubernetes, Amazon EC2, or Amazon ECS using Auto Deploy](https://docs.gitlab.com/topics/autodevops/requirements/)
-* [Use pull-based deployments for improved Kubernetes management](https://docs.gitlab.com/user/clusters/agent/)
-* [Set up protected environments](https://docs.gitlab.com/ci/environments/protected_environments/)
+詳しい契約は [SPEC.md](SPEC.md) を参照。要点だけ:
 
-***
+| 引数 | 返すもの | |
+|---|---|---|
+| `--haj-describe` | 一行説明 | 必須。`haj` の一覧に使う |
+| `--haj-help` | 詳しい使い方 | 任意。`haj help <名前>` |
+| `--haj-complete <入力済みの語...>` | 補完候補(改行区切り) | 任意。TAB補完 |
 
-# Editing this README
+コアは `HAJ_ROOT`(そのコマンドが属するツリー)と `HAJ_NAME` を環境変数で渡すので、
+共通ライブラリは `. "$HAJ_ROOT/lib/common.sh"` で読める。
 
-When you're ready to make this README your own, just edit this file and use the handy template below (or feel free to structure it however you want - this is just a starting point!). Thanks to [makeareadme.com](https://www.makeareadme.com/) for this template.
+**規約フックは共通ライブラリを読む前に処理すること。** 説明文を1行返すためだけに
+重い初期化をすると、TAB のたびにその分だけ待たされる。
 
-## Suggestions for a good README
+## 探索順
 
-Every project is different, so consider which of these sections apply to yours. The sections used in the template are suggestions for most open source projects. Also keep in mind that while a README can be too long and detailed, too long is better than too short. If you think your README is too long, consider utilizing another form of documentation rather than cutting out information.
+先に見つかったものが勝つ。
 
-## Name
-Choose a self-explaining name for your project.
+| 順 | 場所 | 用途 |
+|---|---|---|
+| 1 | カレントから上へ辿った `.haj/commands/<名前>` | プロジェクト固有 |
+| 2 | `~/.haj/commands/<名前>` | 個人用 |
+| 3 | `$HAJ_COMMAND_PATH`(既定 `/usr/local/lib/haj/commands`) | 全社/イメージ共通 |
+| 4 | `$PATH` の `haj-<名前>` | git 方式の逃げ道 |
 
-## Description
-Let people know what your project can do specifically. Provide context and add a link to any reference visitors might be unfamiliar with. A list of Features or a Background subsection can also be added here. If there are alternatives to your project, this is a good place to list differentiating factors.
+どれが勝っているか分からなくなったら `haj which <名前>`。
 
-## Badges
-On some READMEs, you may see small images that convey metadata, such as whether or not all the tests are passing for the project. You can use Shields to add some to your README. Many services also have instructions for adding a badge.
+## ディレクトリ構成(ツリー)
 
-## Visuals
-Depending on what you are making, it can be a good idea to include screenshots or even a video (you'll frequently see GIFs rather than actual videos). Tools like ttygif can help, but check out Asciinema for a more sophisticated method.
+```
+<ツリー>/
+  commands/          ← 実行可能ファイルを置く。ここにある名前がコマンドになる
+    mig
+    deploy
+  lib/               ← 共通ライブラリ。$HAJ_ROOT/lib/... で読める
+    common.sh
+  help.header        ← haj help の先頭に出す固定文(任意)
+  help.footer        ← haj help の末尾に出す固定文(任意)
+```
 
-## Installation
-Within a particular ecosystem, there may be a common way of installing things, such as using Yarn, NuGet, or Homebrew. However, consider the possibility that whoever is reading your README is a novice and would like more guidance. Listing specific steps helps remove ambiguity and gets people to using your project as quickly as possible. If it only runs in a specific context like a particular programming language version or operating system or has dependencies that have to be installed manually, also add a Requirements subsection.
+`haj help` は **header + 自動生成のコマンド一覧 + footer** を出す。
+コマンド一覧を手で書かないこと。
 
-## Usage
-Use examples liberally, and show the expected output if you can. It's helpful to have inline the smallest example of usage that you can demonstrate, while providing links to more sophisticated examples if they are too long to reasonably include in the README.
+例は [examples/](examples/) にある。
 
-## Support
-Tell people where they can go to for help. It can be any combination of an issue tracker, a chat room, an email address, etc.
+## シェル補完
 
-## Roadmap
-If you have ideas for releases in the future, it is a good idea to list them in the README.
+```sh
+# zsh
+install -m 644 completions/_haj /usr/local/share/zsh/site-functions/_haj
 
-## Contributing
-State if you are open to contributions and what your requirements are for accepting them.
+# bash
+install -m 644 completions/haj.bash /etc/bash_completion.d/haj
+```
 
-For people who want to make changes to your project, it's helpful to have some documentation on how to get started. Perhaps there is a script that they should run or some environment variables that they need to set. Make these steps explicit. These instructions could also be useful to your future self.
+補完スクリプトは候補を一切持たない。`haj __complete` に聞くだけなので、
+**コマンドを足しても更新不要**。
 
-You can also document commands to lint the code or run tests. These steps help to ensure high code quality and reduce the likelihood that the changes inadvertently break something. Having instructions for running tests is especially helpful if it requires external setup, such as starting a Selenium server for testing in a browser.
+## 開発
 
-## Authors and acknowledgment
-Show your appreciation to those who have contributed to the project.
+依存クレートはゼロ。標準ライブラリだけで書く、というのが設計上の制約
+(haj がやるのは探索と exec だけで、CPU の仕事は無い。clap や serde を持ち込んでも
+ビルド時間と監査対象が増えるだけで得るものが無い)。
 
-## License
-For open source projects, say how it is licensed.
+```sh
+cargo test                                 # 統合テスト
+cargo clippy --all-targets -- -D warnings
+cargo fmt --check
+```
 
-## Project status
-If you have run out of energy or time for your project, put a note at the top of the README saying that development has slowed down or stopped completely. Someone may choose to fork your project or volunteer to step in as a maintainer or owner, allowing your project to keep going. You can also make an explicit request for maintainers.
+テストは一時ディレクトリに本物の実行ファイルを置いて `haj` を外から叩く。
+探索順・同名の優先度・規約・フックのタイムアウト・終了コードの伝播といった、
+この道具の本質そのものを検証している。
+
+## リリース
+
+`Cargo.toml` の版を上げ、タグを打つと CI が静的バイナリをビルドして
+Package Registry と Release に公開する。
+
+```sh
+git tag v0.2.0 && git push origin v0.2.0
+```
+
+タグ(`v` を除いた部分)と `Cargo.toml` の `version` が食い違う場合、CI は失敗する。

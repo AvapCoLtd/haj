@@ -1,0 +1,71 @@
+#!/bin/sh
+# 規約に従うサブコマンドの見本。
+#
+# shebangは /bin/sh にしてある。実装言語は自由だが、CIコンテナ(alpine等)には
+# bash が入っていないことが多く、#!/bin/bash と書くと exec が ENOENT で落ちる。
+# 「ファイルは在るのに No such file or directory」という分かりにくい失敗になる。
+#
+# このファイルを実行可能にして <リポジトリ>/.haj/commands/deploy に置くだけで、
+#   - haj deploy               として実行でき
+#   - haj の一覧に説明が出て
+#   - haj deploy <TAB> が staging/production を補完する
+# ようになる。ヘルプにも補完スクリプトにも1行も書き足す必要はない。
+set -euo pipefail
+
+# --- hajの規約 -----------------------------------------------------------------
+#
+# 規約フックは「本体の初期化より前」に処理すること。
+# --haj-describe は haj help とTAB補完のたびに呼ばれるので、ここで重い初期化
+# (設定の読み込み、認証、DB接続など)をすると、その分だけTABが遅くなる。
+case "${1:-}" in
+  --haj-describe)
+    echo "アプリをデプロイする"
+    exit 0
+    ;;
+  --haj-help)
+    cat <<'EOF'
+haj deploy <staging|production> [--dry-run]
+
+  staging      検証環境へデプロイする
+  production   本番へデプロイする(確認プロンプトあり)
+
+  --dry-run    実際には流さず、何をするかだけ表示する
+EOF
+    exit 0
+    ;;
+  --haj-complete)
+    shift
+    # 渡されるのは「入力済みの語」。0語なら1語目を、1語以上ならその次を補完する。
+    # ここを [ $# -le 1 ] と書くと1つずれる(SPEC.md 4.3)。
+    if [ $# -eq 0 ]; then
+      printf '%s\n' staging production
+    else
+      printf -- '--dry-run\n'
+    fi
+    exit 0
+    ;;
+esac
+
+# --- ここから本体 ---------------------------------------------------------------
+# 共通ライブラリはコアが渡す HAJ_ROOT から読む。プロジェクト固有のコマンドは
+# そのプロジェクトの lib を読むことになり、全社共通の lib と混線しない。
+if [ -r "${HAJ_ROOT:-}/lib/common.sh" ]; then
+  # shellcheck disable=SC1091
+  . "${HAJ_ROOT}/lib/common.sh"
+fi
+
+env="${1:-}"
+case "$env" in
+  staging|production) ;;
+  *)
+    echo "error: 環境を指定してください: haj ${HAJ_NAME:-deploy} <staging|production>" >&2
+    exit 1
+    ;;
+esac
+
+if [ "$env" = production ]; then
+  read -r -p "本番へデプロイします。よろしいですか? [y/N] " ans
+  [ "$ans" = y ] || { echo "中止しました"; exit 1; }
+fi
+
+echo "==> ${env} へデプロイします"

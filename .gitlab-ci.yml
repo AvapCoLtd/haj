@@ -1,0 +1,177 @@
+# haj の CI。
+#
+#   push/MR  → test (fmt / clippy / cargo test)
+#   tag      → test → build (musl静的バイナリ) → publish (Package Registry) → release
+#
+# イメージは avap.plus のプロキシキャッシュ経由で取る(このインスタンスの作法)。
+# rust:1-alpine は musl がネイティブなので、クロスコンパイルの仕掛けが要らずに
+# 依存ゼロの静的バイナリが出る。
+
+stages:
+  - test
+  - build
+  - publish
+  - release
+
+variables:
+  # CIの中でだけ使う。開発者の ~/.cargo は汚さない。
+  CARGO_HOME: $CI_PROJECT_DIR/.cargo
+  CARGO_TERM_COLOR: always
+  TARGET: x86_64-unknown-linux-musl
+
+default:
+  image: avap.plus/dockerhub/library/rust:1-alpine
+  before_script:
+    # rust:1-alpine には C リンカが無い。musl-dev を入れないと `cc` が見つからず落ちる。
+    - apk add --no-cache musl-dev >/dev/null
+  cache:
+    key:
+      files:
+        - Cargo.lock
+    paths:
+      - .cargo/
+      - target/
+
+test:
+  stage: test
+  script:
+    - rustup component add rustfmt clippy
+    - cargo fmt --check
+    # 警告をエラーとして扱う。放置された警告は誰も読まなくなる。
+    - cargo clippy --all-targets -- -D warnings
+    - cargo test --locked
+  rules:
+    - if: $CI_COMMIT_TAG
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH
+
+# タグと Cargo.toml の版が食い違ったまま公開されると、
+# 「0.2.0 と名乗る 0.1.0 のバイナリ」が配られて追跡不能になる。ここで止める。
+#
+# 併せて、以降のジョブが使う VERSION(タグから先頭のvを落としたもの)を配る。
+# GitLab CIのYAMLでは release: セクションで ${VAR#v} のような加工ができないため、
+# ここで確定させて dotenv で渡すしかない。
+version:
+  stage: test
+  before_script: []
+  script:
+    - |
+      CARGO_VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
+      VERSION="${CI_COMMIT_TAG#v}"
+      echo "Cargo.toml: ${CARGO_VERSION} / tag: ${CI_COMMIT_TAG} → ${VERSION}"
+      if [ "$CARGO_VERSION" != "$VERSION" ]; then
+        echo "error: タグ (${VERSION}) と Cargo.toml の version (${CARGO_VERSION}) が一致しません。" >&2
+        echo "  Cargo.toml を直してタグを打ち直してください。" >&2
+        exit 1
+      fi
+      echo "VERSION=${VERSION}" > version.env
+  artifacts:
+    reports:
+      dotenv: version.env
+  cache: []
+  rules:
+    - if: $CI_COMMIT_TAG
+
+build:
+  stage: build
+  before_script:
+    - apk add --no-cache musl-dev binutils >/dev/null
+  script:
+    - rustup target add "$TARGET"
+    - cargo build --release --locked --target "$TARGET"
+    - mkdir -p dist
+    - cp "target/${TARGET}/release/haj" dist/haj
+    # 依存ゼロの静的バイナリであることを、思い込みではなく毎回確かめる。
+    # ここが動的リンクになると alpine や distroless で動かなくなる。
+    #
+    # 判定に ldd を使ってはいけない。musl の ldd は動的ローダ自身なので、
+    # 完全に静的な static-pie バイナリに対しても "/lib/ld-musl-x86_64.so.1" と
+    # 自分を出力する。ELFヘッダを直接見る。
+    #   INTERP セグメント → 動的リンカを要求している
+    #   NEEDED エントリ   → 共有ライブラリに依存している
+    - |
+      if readelf -l dist/haj | grep -q INTERP; then
+        echo "error: INTERPセグメントがあります(動的リンクです)" >&2
+        readelf -l dist/haj | grep -A1 INTERP >&2
+        exit 1
+      fi
+      if readelf -d dist/haj 2>/dev/null | grep -q NEEDED; then
+        echo "error: 共有ライブラリに依存しています" >&2
+        readelf -d dist/haj | grep NEEDED >&2
+        exit 1
+      fi
+      echo "静的リンク OK ($(du -h dist/haj | cut -f1)): $(file dist/haj 2>/dev/null || echo static-pie)"
+    # 出来たバイナリが実際に動くところまで見る
+    - ./dist/haj --version
+    - |
+      tar -czf "dist/haj-${TARGET}.tar.gz" -C dist haj
+      cd dist && sha256sum "haj-${TARGET}.tar.gz" > "haj-${TARGET}.tar.gz.sha256"
+      cat "haj-${TARGET}.tar.gz.sha256"
+  artifacts:
+    paths:
+      - dist/
+    expire_in: 1 week
+  rules:
+    - if: $CI_COMMIT_TAG
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+# 汎用パッケージレジストリへ上げる。install.sh が取りに来る先。
+publish:
+  stage: publish
+  before_script:
+    - apk add --no-cache curl >/dev/null
+  needs:
+    - job: build
+      artifacts: true
+    - job: version
+      artifacts: true
+    - job: test
+  cache: []
+  script:
+    - |
+      BASE="${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/haj/${VERSION}"
+      for f in "haj-${TARGET}.tar.gz" "haj-${TARGET}.tar.gz.sha256"; do
+        echo "==> PUT ${BASE}/${f}"
+        curl --fail --silent --show-error \
+          --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
+          --upload-file "dist/${f}" \
+          "${BASE}/${f}"
+        echo
+      done
+  rules:
+    - if: $CI_COMMIT_TAG
+
+release:
+  stage: release
+  # release-cli は dockerhub ではなく gitlab.com のレジストリにある
+  image: registry.gitlab.com/gitlab-org/release-cli:latest
+  before_script: []
+  cache: []
+  needs:
+    - job: publish
+    - job: version
+      artifacts: true
+  script:
+    - echo "リリース ${CI_COMMIT_TAG} (${VERSION}) を作成します"
+  release:
+    tag_name: $CI_COMMIT_TAG
+    name: haj $CI_COMMIT_TAG
+    description: |
+      Linux x86_64 の静的バイナリ (musl)。glibc も bash も要らない。
+
+      ```sh
+      HAJ_TOKEN=<GitLabトークン> ./install.sh ${VERSION}
+      ```
+
+      他のプラットフォームは `cargo build --release` で手元からビルドしてください
+      (依存クレートはゼロなので、Rust さえあれば通ります)。
+    assets:
+      links:
+        - name: haj-x86_64-unknown-linux-musl.tar.gz
+          url: $CI_API_V4_URL/projects/$CI_PROJECT_ID/packages/generic/haj/${VERSION}/haj-x86_64-unknown-linux-musl.tar.gz
+          link_type: package
+        - name: haj-x86_64-unknown-linux-musl.tar.gz.sha256
+          url: $CI_API_V4_URL/projects/$CI_PROJECT_ID/packages/generic/haj/${VERSION}/haj-x86_64-unknown-linux-musl.tar.gz.sha256
+          link_type: other
+  rules:
+    - if: $CI_COMMIT_TAG
