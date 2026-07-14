@@ -85,6 +85,9 @@ fn vault_uri(rest: &str) -> Result<String, String> {
     vault_fetch(&segs[..segs.len() - 1], field)
 }
 
+const CANON: &str =
+    "vault template は正準形のみ対応です: {{ with secret \"<パス>\" }}{{ .Data.data.<フィールド> }}{{ end }}";
+
 /// vault-agent template の正準形だけを解釈する。
 ///
 ///   {{ with secret "<パス>" }}{{ .Data.data.<フィールド> }}{{ end }}
@@ -92,39 +95,166 @@ fn vault_uri(rest: &str) -> Result<String, String> {
 /// それ以外の式(printf を含むもの等)は解釈しない。テンプレートエンジンを
 /// 抱え込むことになるし、「どこまで動くのか」が誰にも分からなくなる。
 fn vault_template(value: &str) -> Result<String, String> {
-    const CANON: &str =
-        "vault template は正準形のみ対応です: {{ with secret \"<パス>\" }}{{ .Data.data.<フィールド> }}{{ end }}";
-
-    // {{ ... }} のブロックを取り出す。ブロック間に文字があれば正準形ではない。
-    let mut blocks: Vec<&str> = Vec::new();
-    let mut rest = value;
-    while let Some(start) = rest.find("{{") {
-        if !rest[..start].trim().is_empty() {
-            return Err(CANON.to_string());
+    let t = value.trim();
+    match parse_canonical(t) {
+        Some((path, field, consumed)) if t[consumed..].trim().is_empty() => {
+            let segs: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+            vault_fetch(&segs, &field)
         }
-        let Some(end) = rest[start..].find("}}") else {
-            return Err(CANON.to_string());
-        };
-        blocks.push(rest[start + 2..start + end].trim());
-        rest = &rest[start + end + 2..];
+        _ => Err(CANON.to_string()),
     }
-    if !rest.trim().is_empty() || blocks.len() != 3 || blocks[2] != "end" {
-        return Err(CANON.to_string());
-    }
+}
 
-    let path = blocks[0]
-        .strip_prefix("with secret")
-        .map(str::trim)
-        .and_then(|q| q.strip_prefix('"'))
-        .and_then(|q| q.strip_suffix('"'))
-        .ok_or(CANON)?;
-    let field = blocks[1].strip_prefix(".Data.data.").ok_or(CANON)?.trim();
+/// 正準形トリプルを先頭から1つ読む。読めたら (パス, フィールド, 消費したバイト数)。
+/// テンプレート描画(--secretfile)が同じ規則で文中のブロックを置換できるように、
+/// 「値全体」の判定は呼び出し側に委ねる。
+fn parse_canonical(s: &str) -> Option<(String, String, usize)> {
+    let (b1, r1) = take_block(s)?;
+    let (b2, r2) = take_block(r1)?;
+    let (b3, r3) = take_block(r2)?;
+    if b3 != "end" {
+        return None;
+    }
+    let path = b1
+        .strip_prefix("with secret")?
+        .trim()
+        .strip_prefix('"')?
+        .strip_suffix('"')?;
+    let field = b2.strip_prefix(".Data.data.")?.trim();
     if path.is_empty() || field.is_empty() || field.contains(char::is_whitespace) {
-        return Err(CANON.to_string());
+        return None;
+    }
+    Some((path.to_string(), field.to_string(), s.len() - r3.len()))
+}
+
+/// 先頭の `{{ ... }}` を1つ取る(手前の空白は読み飛ばす)。(中身, 残り) を返す。
+fn take_block(s: &str) -> Option<(&str, &str)> {
+    let inner = s.trim_start().strip_prefix("{{")?;
+    let end = inner.find("}}")?;
+    Some((inner[..end].trim(), &inner[end + 2..]))
+}
+
+/// 明示的な受け渡し(SPEC §10.7)。サブコマンド名の**前**のグローバルフラグ。
+/// フラグを打ったこと自体が同意なので、HAJ_SECRETS のゲートは通らない。
+pub enum Delivery {
+    /// `--secret <名前>=<値>` — 展開して環境変数で渡す。参照でなければ平文のまま
+    Secret { name: String, value: String },
+    /// `--env <ファイル>` — `key = value` を読み、値全体規則で展開して渡す
+    EnvFile(String),
+    /// `--secretfile <出力>=<テンプレート>` — 描画して 0600 で書く
+    SecretFile { out: String, template: String },
+}
+
+impl Delivery {
+    pub fn parse(flag: &str, arg: &str) -> Result<Delivery, String> {
+        let split = || {
+            arg.split_once('=')
+                .filter(|(k, v)| !k.is_empty() && !v.is_empty())
+        };
+        match flag {
+            "--secret" => split()
+                .map(|(k, v)| Delivery::Secret {
+                    name: k.to_string(),
+                    value: v.to_string(),
+                })
+                .ok_or_else(|| format!("--secret は <名前>=<値> で指定してください: {arg}")),
+            "--env" => Ok(Delivery::EnvFile(arg.to_string())),
+            "--secretfile" => split()
+                .map(|(o, t)| Delivery::SecretFile {
+                    out: o.to_string(),
+                    template: t.to_string(),
+                })
+                .ok_or_else(|| {
+                    format!("--secretfile は <出力>=<テンプレート> で指定してください: {arg}")
+                }),
+            other => Err(format!("不明なフラグです: {other}")),
+        }
     }
 
-    let segs: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
-    vault_fetch(&segs, field)
+    /// 解決して proc に適用する。書いた順に呼ぶこと(同名は後勝ち)。
+    /// 失敗したら Err — 呼び出し側は本体を実行せずに止まる(fail-fast)。
+    pub fn apply(&self, proc: &mut Proc) -> Result<(), String> {
+        match self {
+            Delivery::Secret { name, value } => {
+                // 明示なので op の埋め込みも展開する(argv と同じ規則)
+                let v = expand(value, true)
+                    .map_err(|e| format!("--secret {name}: {e}"))?
+                    .unwrap_or_else(|| value.clone());
+                proc.env(name, v);
+                Ok(())
+            }
+            Delivery::EnvFile(file) => {
+                let content = std::fs::read_to_string(file)
+                    .map_err(|e| format!("--env {file}: 読めません: {e}"))?;
+                for (k, v) in crate::config::parse_kv(&content) {
+                    // 値全体規則(環境変数の走査と同じ)。ファイルは中間層なので
+                    // 埋め込みは解釈しない
+                    let v = expand(&v, false)
+                        .map_err(|e| format!("--env {file}: {k}: {e}"))?
+                        .unwrap_or(v);
+                    proc.env(k, v);
+                }
+                Ok(())
+            }
+            Delivery::SecretFile { out, template } => {
+                let content = std::fs::read_to_string(template)
+                    .map_err(|e| format!("--secretfile {template}: 読めません: {e}"))?;
+                let rendered = render_template(&content)
+                    .map_err(|e| format!("--secretfile {template}: {e}"))?;
+                write_secret_file(out, &rendered)
+                    .map_err(|e| format!("--secretfile {out}: 書けません: {e}"))
+            }
+        }
+    }
+}
+
+/// `--secretfile` のテンプレート描画。vault の正準形ブロックを置換し、
+/// op:// を含めばファイル全体を `op inject` に通す(SPEC §10.7)。
+/// `vault://` 短縮形はテンプレート内では解釈しない(トークンの境界が曖昧になる)。
+fn render_template(content: &str) -> Result<String, String> {
+    let mut out = String::new();
+    let mut rest = content;
+    while let Some(start) = rest.find("{{") {
+        out.push_str(&rest[..start]);
+        let tail = &rest[start..];
+        let Some((path, field, len)) = parse_canonical(tail) else {
+            return Err(format!("テンプレート内の {CANON}"));
+        };
+        let segs: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+        out.push_str(&vault_fetch(&segs, &field)?);
+        rest = &tail[len..];
+    }
+    out.push_str(rest);
+
+    if out.contains("op://") {
+        // run() は値向けに末尾の改行を1つ落とす。ファイルでは元の形を保つ。
+        let had_newline = out.ends_with('\n');
+        out = op_inject(&out)?;
+        if had_newline && !out.ends_with('\n') {
+            out.push('\n');
+        }
+    }
+    Ok(out)
+}
+
+/// 全て解決できてから mode 0600 で書く。半端なファイルを残さない。
+/// 書いたファイルは消さない — コアは exec(2) で自分を置き換えるため、
+/// 実行後の後始末は構造的に不可能(SPEC §10.7)。
+fn write_secret_file(path: &str, content: &str) -> Result<(), String> {
+    use std::io::Write as _;
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+    let mut f = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(path)
+        .map_err(|e| e.to_string())?;
+    f.write_all(content.as_bytes()).map_err(|e| e.to_string())?;
+    // 既存ファイルを上書きした場合(mode は作成時にしか効かない)もモードを強制する
+    f.set_permissions(std::fs::Permissions::from_mode(0o600))
+        .map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 /// `vault kv get` で1フィールドを取る。パスの2セグメント目が `data` なら

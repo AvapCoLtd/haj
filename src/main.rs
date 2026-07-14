@@ -24,10 +24,37 @@ use discovery::Command;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
+const USAGE_FLAGS: &str = "使い方: haj [--secret <名前>=<値>]... [--env <ファイル>]... [--secretfile <出力>=<テンプレート>]... <コマンド> [引数...]";
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let (name, rest) = match args.split_first() {
+
+    // haj自身のグローバルフラグ(SPEC §10.7)。**サブコマンド名の前にだけ**書ける。
+    // 名前以降は解釈しない(§11)ので、フラグ以外に当たったらそこで止まる。
+    let mut deliveries: Vec<secrets::Delivery> = Vec::new();
+    let mut idx = 0;
+    while idx < args.len() {
+        let flag = args[idx].as_str();
+        if !matches!(flag, "--secret" | "--env" | "--secretfile") {
+            break;
+        }
+        let Some(arg) = args.get(idx + 1) else {
+            die(&format!("{flag} には値が要ります\n{USAGE_FLAGS}"));
+        };
+        match secrets::Delivery::parse(flag, arg) {
+            Ok(d) => deliveries.push(d),
+            Err(e) => die(&e),
+        }
+        idx += 2;
+    }
+
+    let (name, rest) = match args[idx..].split_first() {
         None => {
+            if !deliveries.is_empty() {
+                die(&format!(
+                    "フラグの後にコマンド名がありません\n{USAGE_FLAGS}"
+                ));
+            }
             // 素の `haj` はヘルプ。何も分からない状態で来た人に一覧を見せるのが親切。
             print_help(None);
             std::process::exit(0);
@@ -35,7 +62,22 @@ fn main() {
         Some((n, r)) => (n.as_str(), r),
     };
 
+    // 受け渡しフラグは「本体を実行する」ときにだけ意味がある。
+    // exec / sh 以外の組み込みに続けて書かれたら使い方の誤り(SPEC §10.7)。
+    if !deliveries.is_empty()
+        && !matches!(name, "exec" | "sh")
+        && (discovery::is_reserved(name) || name.starts_with('-'))
+    {
+        die(&format!(
+            "--secret / --env / --secretfile は <コマンド> の実行時にだけ使えます\n{USAGE_FLAGS}"
+        ));
+    }
+
     match name {
+        // 探索を通さず、PATH のコマンドに注入だけして実行する。SPEC §9.2。
+        "exec" => exec_external(rest, &deliveries),
+        // exec sh -c の省略形。シェルの変数展開($VAR)を1語で使えるように。
+        "sh" => exec_shell(rest, &deliveries),
         "-h" | "--help" | "help" => {
             print_help(rest.first().map(String::as_str));
             std::process::exit(0);
@@ -95,46 +137,7 @@ fn main() {
 
     // exec で自分を置き換える。ラッパープロセスを残さないので、シグナルも
     // 終了コードもサブコマンドのものがそのまま呼び出し元に伝わる。
-    let mut proc = Proc::new(&cmd.path);
-
-    // シークレット参照の展開(SPEC §10)。HAJ_SECRETS=1 のときだけ、環境変数と
-    // 引数の参照を exec の直前に解決する。解決に失敗したら本体を実行せずに止まる
-    // (未解決の参照文字列がパスワードとしてそのまま使われる事故を防ぐ)。
-    // 規約フック(--haj-describe 等)はこの経路を通らないので展開されない。
-    if secrets::enabled() {
-        for (k, v) in std::env::vars_os() {
-            let (Ok(k), Ok(v)) = (k.into_string(), v.into_string()) else {
-                continue;
-            };
-            // 環境変数は「値全体が参照」のときだけ。op:// をたまたま文中に含む
-            // 変数(CI_MERGE_REQUEST_DESCRIPTION 等)で止まらないように。
-            match secrets::expand(&v, false) {
-                Ok(Some(resolved)) => {
-                    proc.env(&k, resolved);
-                }
-                Ok(None) => {}
-                Err(e) => {
-                    eprintln!("haj: {k}: {e}");
-                    std::process::exit(1);
-                }
-            }
-        }
-        let mut expanded = Vec::with_capacity(rest.len());
-        for a in rest {
-            // 引数は人が明示的に書いたもの。op の埋め込み(inject の意味論)も許す。
-            match secrets::expand(a, true) {
-                Ok(Some(v)) => expanded.push(v),
-                Ok(None) => expanded.push(a.clone()),
-                Err(e) => {
-                    eprintln!("haj: {e}");
-                    std::process::exit(1);
-                }
-            }
-        }
-        proc.args(expanded);
-    } else {
-        proc.args(rest);
-    }
+    let mut proc = prepare_proc(&cmd.path, rest, &deliveries);
 
     proc.env("HAJ_NAME", &cmd.name);
     match &cmd.root {
@@ -172,6 +175,121 @@ fn main() {
         }
     }
     std::process::exit(126); // 「見つかったが実行できない」
+}
+
+fn die(msg: &str) -> ! {
+    eprintln!("haj: {msg}");
+    std::process::exit(1);
+}
+
+/// シークレット参照の展開(SPEC §10)を適用した子プロセスを組み立てる。
+/// 解決に失敗したら本体を実行せずに終了する(fail-fast — 未解決の参照文字列が
+/// パスワードとしてそのまま使われる事故を防ぐ)。
+/// 規約フック(--haj-describe 等)はこの経路を通らないので展開されない。
+fn prepare_proc(path: &std::path::Path, args: &[String], deliveries: &[secrets::Delivery]) -> Proc {
+    let mut proc = Proc::new(path);
+
+    // ambient な走査。HAJ_SECRETS=1 のときだけ。
+    if secrets::enabled() {
+        for (k, v) in std::env::vars_os() {
+            let (Ok(k), Ok(v)) = (k.into_string(), v.into_string()) else {
+                continue;
+            };
+            // 環境変数は「値全体が参照」のときだけ。op:// をたまたま文中に含む
+            // 変数(CI_MERGE_REQUEST_DESCRIPTION 等)で止まらないように。
+            match secrets::expand(&v, false) {
+                Ok(Some(resolved)) => {
+                    proc.env(&k, resolved);
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    eprintln!("haj: {k}: {e}");
+                    std::process::exit(1);
+                }
+            }
+        }
+        let mut expanded = Vec::with_capacity(args.len());
+        for a in args {
+            // 引数は人が明示的に書いたもの。op の埋め込み(inject の意味論)も許す。
+            match secrets::expand(a, true) {
+                Ok(Some(v)) => expanded.push(v),
+                Ok(None) => expanded.push(a.clone()),
+                Err(e) => {
+                    eprintln!("haj: {e}");
+                    std::process::exit(1);
+                }
+            }
+        }
+        proc.args(expanded);
+    } else {
+        proc.args(args);
+    }
+
+    // 明示的な受け渡し(SPEC §10.7)。フラグを打ったこと自体が同意なので、
+    // HAJ_SECRETS のゲートは通らない。ambient な走査より後に適用する = 明示が勝つ。
+    // 書いた順に適用するので、同名の指定は後勝ち。
+    for d in deliveries {
+        if let Err(e) = d.apply(&mut proc) {
+            eprintln!("haj: {e}");
+            std::process::exit(1);
+        }
+    }
+
+    proc
+}
+
+/// `haj exec <プログラム> [引数...]`(SPEC §9.2)。
+///
+/// 探索を通さず、PATH のコマンド(`/` を含めばそのパス)に**シークレットの注入だけ
+/// して**実行する。op run / doppler run が占めている場所。
+fn exec_external(args: &[String], deliveries: &[secrets::Delivery]) -> ! {
+    let Some((prog, prog_args)) = args.split_first() else {
+        die("使い方: haj exec <プログラム> [引数...]");
+    };
+    exec_program(prog, prog_args.to_vec(), deliveries)
+}
+
+/// `haj sh '<コマンド>' [引数...]`(SPEC §9.2)— `haj exec sh -c` の省略形。
+/// 追加の引数はシェルの位置パラメータ($1...)として渡る。
+fn exec_shell(args: &[String], deliveries: &[secrets::Delivery]) -> ! {
+    let Some((script, rest)) = args.split_first() else {
+        die("使い方: haj sh '<コマンド>' [引数...]");
+    };
+    // sh -c <script> の直後の引数は $0。$1 から始めたいので埋める。
+    let mut argv = vec!["-c".to_string(), script.clone(), "haj".to_string()];
+    argv.extend(rest.iter().cloned());
+    exec_program("sh", argv, deliveries)
+}
+
+fn exec_program(prog: &str, args: Vec<String>, deliveries: &[secrets::Delivery]) -> ! {
+    let path = if prog.contains('/') {
+        std::path::PathBuf::from(prog)
+    } else {
+        match discovery::find_in_path(prog) {
+            Some(p) => p,
+            None => {
+                eprintln!("haj: exec: 見つかりません: {prog}");
+                std::process::exit(127);
+            }
+        }
+    };
+
+    let mut proc = prepare_proc(&path, &args, deliveries);
+
+    // haj の外の世界のコマンドに、haj の顔をさせない。
+    proc.env_remove("HAJ_ROOT")
+        .env_remove("HAJ_NAME")
+        .env_remove("HAJ_PROJECT")
+        .env_remove("HAJ_PROJECT_DIR");
+
+    let err = proc.exec(); // 成功すれば戻ってこない
+    eprintln!("haj: {} を実行できません: {err}", path.display());
+    if err.kind() == std::io::ErrorKind::NotFound && path.exists() {
+        if let Some(interp) = shebang_interpreter(&path) {
+            eprintln!("  shebang が指すインタプリタが見つかりません: {interp}");
+        }
+    }
+    std::process::exit(126);
 }
 
 /// 1行目が `#!` で始まっていれば、そのインタプリタのパスを返す。
