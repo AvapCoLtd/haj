@@ -16,9 +16,14 @@ use std::process::{Command as Proc, Stdio};
 use std::sync::OnceLock;
 
 /// vault サーバの既定。環境に VAULT_ADDR / BAO_ADDR があればそちらを尊重する。
-pub const DEFAULT_VAULT_ADDR: &str = "https://vault.avap.plus";
+/// 公開プロファイルでは空 = 注入しない(CLI 自身の設定に任せる)。
+pub const DEFAULT_VAULT_ADDR: &str = crate::profile::pick("https://vault.avap.plus", "");
 /// 未ログイン時に自動実行する `login` の既定引数。`off` で無効化。
-pub const DEFAULT_VAULT_LOGIN: &str = "-method=oidc -path=id-avap-keycloak";
+/// 公開プロファイルでは off(向き先の OIDC を知らないのに勝手にログインしない)。
+pub const DEFAULT_VAULT_LOGIN: &str =
+    crate::profile::pick("-method=oidc -path=id-avap-keycloak", "off");
+/// vault 参照の解決に使う CLI の既定。avap は OpenBao。
+pub const DEFAULT_VAULT_CMD: &str = crate::profile::pick("bao", "vault");
 
 /// 展開は明示のオプトイン。clone した直後のリポジトリで勝手に金庫が開く、
 /// という事故を防ぐため、既定では何もしない。
@@ -260,7 +265,7 @@ fn write_secret_file(path: &str, content: &str) -> Result<(), String> {
 /// `vault kv get` で1フィールドを取る。パスの2セグメント目が `data` なら
 /// KV v2 の API パス(template の書き方)とみなし、mount と相対パスに読み替える。
 fn vault_fetch(path: &[&str], field: &str) -> Result<String, String> {
-    let cli = cli_for("HAJ_VAULT_CMD", "secrets.vault_cmd", "bao");
+    let cli = cli_for("HAJ_VAULT_CMD", "secrets.vault_cmd", DEFAULT_VAULT_CMD);
     ensure_vault_login(&cli)?;
     let mut proc = vault_proc(&cli);
     proc.args(["kv", "get", &format!("-field={field}")]);

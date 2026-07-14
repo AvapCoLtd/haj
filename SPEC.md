@@ -465,6 +465,21 @@ selfupgrade.token = vault://users/hajime/gitlab-pat/gitlab.avaper.day/token
 - 展開されるのは `selfupgrade.token` **だけ**。`secrets.op_cmd` / `secrets.vault_cmd` など
   などリゾルバ自身の設定は展開しない(参照の解決に参照が要る、という再帰を作らない)
 
+### 8.5 ビルドプロファイル
+
+素のビルド(`cargo build`)は**公開プロファイル** — avap のインフラを一切向かない
+中立な既定値になる。avap の値は、CI がビルド時に **`HAJ_BUILD_AVAP=1`** を
+注入したときだけ焼き込まれる(`option_env!`。実行時の環境変数ではない)。
+
+| 既定値 | avap | 公開 |
+|---|---|---|
+| `secrets.vault_cmd` | `bao` | `vault` |
+| `secrets.vault_addr` | `https://vault.avap.plus` | (空 = 注入しない) |
+| `secrets.vault_login` | `-method=oidc -path=id-avap-keycloak` | `off` |
+| `selfupgrade.gitlab` / `project_id` | avap の GitLab | (空 = 設定されるまで selfupgrade 不可) |
+
+どちらのプロファイルでも、実行時の設定(§8.3)で上書きできることは変わらない。
+
 ---
 
 ## 9. コア組み込みのコマンド

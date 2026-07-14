@@ -143,7 +143,7 @@ pub const KEYS: &[(&str, &str, &str, &str)] = &[
     (
         "HAJ_VAULT_CMD",
         "secrets.vault_cmd",
-        "bao",
+        crate::secrets::DEFAULT_VAULT_CMD,
         "vault 参照の解決に使う CLI",
     ),
     (
@@ -161,13 +161,13 @@ pub const KEYS: &[(&str, &str, &str, &str)] = &[
     (
         "HAJ_GITLAB",
         "selfupgrade.gitlab",
-        "https://gitlab.avaper.day",
+        crate::selfupgrade::DEFAULT_GITLAB,
         "haj 自身の取得元 GitLab (selfupgrade)",
     ),
     (
         "HAJ_PROJECT_ID",
         "selfupgrade.project_id",
-        "788",
+        crate::selfupgrade::DEFAULT_PROJECT_ID,
         "haj のプロジェクト ID",
     ),
     (
@@ -225,7 +225,13 @@ pub fn template() {
     println!("# selfupgrade が使う GitLab トークン (環境変数: HAJ_TOKEN)。既定値なし。");
     println!("# 平文でも、シークレット参照でもよい (SPEC §8.4):");
     println!("# selfupgrade.token = glpat-xxxxxxxx");
-    println!("# selfupgrade.token = vault://users/<名前>/gitlab-pat/gitlab.avaper.day/token");
+    println!(
+        "# selfupgrade.token = {}",
+        crate::profile::pick(
+            "vault://users/<名前>/gitlab-pat/gitlab.avaper.day/token",
+            "vault://<マウント>/<パス>/token",
+        )
+    );
 }
 
 /// `haj config` の出力。
