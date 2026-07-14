@@ -1022,3 +1022,33 @@ fn shはスクリプトがダッシュで始まっても誤解釈しない() {
         "hajが再帰的に走った: {s}"
     );
 }
+
+#[test]
+fn selfupgradeはgithub形式のjsonも読める() {
+    let sb = Sandbox::new("gh-json");
+    let cp = sb.show_command();
+
+    // GitHub API は "tag_name": "v1.2.3"(コロンの後に空白)。
+    // GitLab は "tag_name":"v1.2.3"。決め打ちすると片方で読めなくなる。
+    sb.exe(
+        "extbin/curl",
+        &format!(
+            "#!/bin/sh\nprintf '{{\\n  \"tag_name\": \"v{}\",\\n  \"name\": \"x\"\\n}}'\n",
+            env!("CARGO_PKG_VERSION")
+        ),
+    );
+    let path = format!(
+        "{}:{}",
+        sb.dir.join("extbin").display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+
+    // 既定の取得元(GitHub)。認証なしで最新版を読み、現行版と同じ = 0
+    let out = sb.haj(&cp, &["selfupgrade", "--check"], &[("PATH", &path)]);
+    assert_eq!(out.status.code(), Some(0), "stderr: {}", stderr(&out));
+    assert!(
+        stdout(&out).contains("最新です"),
+        "stdout: {}",
+        stdout(&out)
+    );
+}
