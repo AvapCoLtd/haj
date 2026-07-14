@@ -14,79 +14,138 @@ use std::process::{Command, Stdio};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
-/// 公開プロファイルでは空 = 取得元が設定されるまで selfupgrade は動かない
-/// (GitHub Releases 対応は #10 フェーズ3)。
-pub const DEFAULT_GITLAB: &str = crate::profile::pick("https://gitlab.avaper.day", "");
-pub const DEFAULT_PROJECT_ID: &str = crate::profile::pick("788", "");
+/// 既定の取得元。公開リポジトリの GitHub Releases なので**認証は要らない**。
+pub const DEFAULT_GITHUB: &str = "AvapCoLtd/haj";
+pub const DEFAULT_GITLAB: &str = "";
+pub const DEFAULT_PROJECT_ID: &str = "";
 pub const DEFAULT_TARGET: &str = "x86_64-unknown-linux-musl";
 
+/// 取得元(SPEC §9.1)。
+///
+/// 既定は GitHub Releases。`selfupgrade.gitlab` と `selfupgrade.project_id` を
+/// 設定したときだけ GitLab の Package Registry を見る(private な社内配布向け)。
+enum Source {
+    /// GitHub Releases。`<owner>/<repo>`。public なら認証なしで取れる
+    GitHub { repo: String },
+    /// GitLab の汎用パッケージレジストリ。private なのでトークンが要る
+    GitLab {
+        base: String,
+        project_id: String,
+        token: String,
+    },
+}
+
 struct Config {
-    gitlab: String,
-    project_id: String,
+    source: Source,
     target: String,
-    token: String,
 }
 
 impl Config {
     fn load() -> Result<Self, String> {
         let cfg = crate::config::Config::load();
+        let target = cfg
+            .get("HAJ_TARGET", "selfupgrade.target", DEFAULT_TARGET)
+            .0;
 
-        let token = cfg
-            .get_opt("HAJ_TOKEN", "selfupgrade.token")
-            .map(|(v, _)| v)
-            .ok_or_else(|| {
-                let where_to = cfg
-                    .path
-                    .as_ref()
-                    .map(|p| p.display().to_string())
-                    .unwrap_or_else(|| "~/.config/haj/config".to_string());
-                format!(
-                    "GitLabのトークンがありません。このリポジトリはprivateなので、\
-                     リリースの取得に必要です。\n  \
-                     環境変数 HAJ_TOKEN を渡すか、{where_to} に書いてください:\n    \
-                     selfupgrade.token = glpat-xxxxxxxx\n    \
-                     selfupgrade.token = vault://users/<名前>/gitlab-pat/gitlab.avaper.day/token  (参照でもよい)"
-                )
-            })?;
-
-        // token にはシークレット参照を書ける(SPEC §8.4)。平文 PAT をディスクに
-        // 置かずに済ませるため、使うこの瞬間に展開する。~/.config/haj/config は
-        // 本人しか書けないファイルなので、参照を書いたこと自体が同意 — ゲート不要。
-        let token = crate::secrets::expand(&token, false)
-            .map_err(|e| format!("token: {e}"))?
-            .unwrap_or(token);
-
-        Ok(Config {
-            gitlab: cfg
-                .get("HAJ_GITLAB", "selfupgrade.gitlab", DEFAULT_GITLAB)
-                .0,
-            project_id: cfg
+        let gitlab = cfg
+            .get("HAJ_GITLAB", "selfupgrade.gitlab", DEFAULT_GITLAB)
+            .0;
+        if !gitlab.is_empty() {
+            // GitLab を明示した = private な取得元。トークンが要る。
+            let project_id = cfg
                 .get(
                     "HAJ_PROJECT_ID",
                     "selfupgrade.project_id",
                     DEFAULT_PROJECT_ID,
                 )
-                .0,
-            target: cfg
-                .get("HAJ_TARGET", "selfupgrade.target", DEFAULT_TARGET)
-                .0,
-            token,
+                .0;
+            if project_id.is_empty() {
+                return Err(
+                    "selfupgrade.gitlab を設定したら selfupgrade.project_id も要ります".into(),
+                );
+            }
+            let token = cfg
+                .get_opt("HAJ_TOKEN", "selfupgrade.token")
+                .map(|(v, _)| v)
+                .ok_or_else(|| {
+                    let where_to = cfg
+                        .path
+                        .as_ref()
+                        .map(|p| p.display().to_string())
+                        .unwrap_or_else(|| "~/.config/haj/config".to_string());
+                    format!(
+                        "GitLab のトークンがありません(private な取得元にはトークンが要ります)。\n  \
+                         環境変数 HAJ_TOKEN を渡すか、{where_to} に書いてください:\n    \
+                         selfupgrade.token = <トークン>\n    \
+                         selfupgrade.token = vault://<マウント>/<パス>/token  (参照でもよい)"
+                    )
+                })?;
+            // token にはシークレット参照を書ける(SPEC §8.4)。平文をディスクに
+            // 置かずに済ませるため、使うこの瞬間に展開する。設定ファイルは本人しか
+            // 書けないので、参照を書いたこと自体が同意 — ゲート不要。
+            let token = crate::secrets::expand(&token, false)
+                .map_err(|e| format!("token: {e}"))?
+                .unwrap_or(token);
+            return Ok(Config {
+                source: Source::GitLab {
+                    base: gitlab,
+                    project_id,
+                    token,
+                },
+                target,
+            });
+        }
+
+        let repo = cfg
+            .get("HAJ_GITHUB", "selfupgrade.github", DEFAULT_GITHUB)
+            .0;
+        if repo.is_empty() {
+            return Err(
+                "取得元が設定されていません(selfupgrade.github か selfupgrade.gitlab)".into(),
+            );
+        }
+        Ok(Config {
+            source: Source::GitHub { repo },
+            target,
         })
     }
 
-    /// CI_JOB_TOKEN と同値なら JOB-TOKEN ヘッダ、それ以外は PRIVATE-TOKEN ヘッダ。
-    fn auth_header(&self) -> String {
-        match std::env::var("CI_JOB_TOKEN") {
-            Ok(t) if t == self.token => format!("JOB-TOKEN: {}", self.token),
-            _ => format!("PRIVATE-TOKEN: {}", self.token),
+    /// 認証ヘッダ。GitHub(public)は不要なので空を返す。
+    fn auth_header(&self) -> Option<String> {
+        match &self.source {
+            Source::GitHub { .. } => None,
+            Source::GitLab { token, .. } => match std::env::var("CI_JOB_TOKEN") {
+                // CI_JOB_TOKEN と同値なら JOB-TOKEN ヘッダ、それ以外は PRIVATE-TOKEN
+                Ok(t) if t == *token => Some(format!("JOB-TOKEN: {token}")),
+                _ => Some(format!("PRIVATE-TOKEN: {token}")),
+            },
         }
     }
 
+    /// 最新版を調べる API の URL。
+    fn latest_url(&self) -> String {
+        match &self.source {
+            Source::GitHub { repo } => {
+                format!("https://api.github.com/repos/{repo}/releases/latest")
+            }
+            Source::GitLab {
+                base, project_id, ..
+            } => format!("{base}/api/v4/projects/{project_id}/releases?per_page=1"),
+        }
+    }
+
+    /// 成果物の URL。
     fn package_url(&self, version: &str, file: &str) -> String {
-        format!(
-            "{}/api/v4/projects/{}/packages/generic/haj/{}/{}",
-            self.gitlab, self.project_id, version, file
-        )
+        match &self.source {
+            Source::GitHub { repo } => {
+                format!("https://github.com/{repo}/releases/download/v{version}/{file}")
+            }
+            Source::GitLab {
+                base, project_id, ..
+            } => {
+                format!("{base}/api/v4/projects/{project_id}/packages/generic/haj/{version}/{file}")
+            }
+        }
     }
 }
 
@@ -164,10 +223,7 @@ fn main(wanted: Option<&str>, check_only: bool) -> Result<i32, String> {
     let archive_path = work.path.join(&archive);
 
     download(&cfg, &cfg.package_url(&version, &archive), &archive_path).map_err(|e| {
-        format!(
-            "{e}\n  版 {version} が存在しないか、トークンに read_api / \
-             read_package_registry の権限がありません。"
-        )
+        format!("{e}\n  版 {version} のこのターゲット向け成果物が無いのかもしれません。")
     })?;
 
     verify_checksum(&cfg, &version, &archive, &work.path)?;
@@ -231,19 +287,21 @@ fn main(wanted: Option<&str>, check_only: bool) -> Result<i32, String> {
 /// JSONパーサは持ち込まない。欲しいのは最初の "tag_name":"..." ひとつだけで、
 /// そのために serde を足すのは割に合わない。
 fn latest_version(cfg: &Config) -> Result<String, String> {
-    let url = format!(
-        "{}/api/v4/projects/{}/releases?per_page=1",
-        cfg.gitlab, cfg.project_id
-    );
-    let out = Command::new("curl")
-        .args(["-fsSL", "--header", &cfg.auth_header(), &url])
+    let url = cfg.latest_url();
+    let mut proc = Command::new("curl");
+    proc.args(["-fsSL"]);
+    if let Some(h) = cfg.auth_header() {
+        proc.args(["--header", &h]);
+    }
+    let out = proc
+        .arg(&url)
         .stdin(Stdio::null())
         .output()
         .map_err(|e| format!("curl を実行できません: {e}"))?;
 
     if !out.status.success() {
         return Err(format!(
-            "リリース一覧を取得できません ({}). トークンとネットワークを確認してください。",
+            "リリース一覧を取得できません ({}). ネットワーク(private なら取得元とトークン)を確認してください。",
             String::from_utf8_lossy(&out.stderr).trim()
         ));
     }
@@ -259,8 +317,13 @@ fn latest_version(cfg: &Config) -> Result<String, String> {
 }
 
 fn download(cfg: &Config, url: &str, dest: &Path) -> Result<(), String> {
-    let out = Command::new("curl")
-        .args(["-fsSL", "--header", &cfg.auth_header(), "-o"])
+    let mut proc = Command::new("curl");
+    proc.args(["-fsSL"]);
+    if let Some(h) = cfg.auth_header() {
+        proc.args(["--header", &h]);
+    }
+    let out = proc
+        .arg("-o")
         .arg(dest)
         .arg(url)
         .stdin(Stdio::null())
@@ -362,10 +425,14 @@ pub fn long_help() -> String {
 設定は ~/.config/haj/config に書ける(環境変数でも渡せる。haj config で実効値を確認)。
 
   設定ファイルの鍵          環境変数           既定値
-  selfupgrade.token       HAJ_TOKEN         (必須。vault:// などの参照でもよい)
-  selfupgrade.gitlab      HAJ_GITLAB        https://gitlab.avaper.day
-  selfupgrade.project_id  HAJ_PROJECT_ID    788
+  selfupgrade.github      HAJ_GITHUB        AvapCoLtd/haj  (public。認証不要)
   selfupgrade.target      HAJ_TARGET        x86_64-unknown-linux-musl
+
+private な取得元(GitLab の Package Registry)を使う場合だけ:
+
+  selfupgrade.gitlab      HAJ_GITLAB        (未設定)
+  selfupgrade.project_id  HAJ_PROJECT_ID    (未設定)
+  selfupgrade.token       HAJ_TOKEN         (未設定。vault:// などの参照でもよい)
 
 置き換えは、現バイナリと同じディレクトリに書いてから rename する(原子的で、
 実行中のプロセスに影響しない)。書けない場所なら sudo での再実行を提案して終わる。

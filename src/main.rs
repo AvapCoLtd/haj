@@ -12,7 +12,6 @@ mod config;
 mod contract;
 mod discovery;
 mod docs;
-mod profile;
 mod project;
 mod secrets;
 mod selfupgrade;

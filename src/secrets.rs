@@ -15,15 +15,14 @@ use std::io::Write;
 use std::process::{Command as Proc, Stdio};
 use std::sync::OnceLock;
 
-/// vault サーバの既定。環境に VAULT_ADDR / BAO_ADDR があればそちらを尊重する。
-/// 公開プロファイルでは空 = 注入しない(CLI 自身の設定に任せる)。
-pub const DEFAULT_VAULT_ADDR: &str = crate::profile::pick("https://vault.avap.plus", "");
-/// 未ログイン時に自動実行する `login` の既定引数。`off` で無効化。
-/// 公開プロファイルでは off(向き先の OIDC を知らないのに勝手にログインしない)。
-pub const DEFAULT_VAULT_LOGIN: &str =
-    crate::profile::pick("-method=oidc -path=id-avap-keycloak", "off");
-/// vault 参照の解決に使う CLI の既定。avap は OpenBao。
-pub const DEFAULT_VAULT_CMD: &str = crate::profile::pick("bao", "vault");
+/// vault サーバの既定。空 = 注入しない(環境や CLI 自身の設定に任せる)。
+/// 環境に VAULT_ADDR / BAO_ADDR があればそちらを尊重する。
+pub const DEFAULT_VAULT_ADDR: &str = "";
+/// 未ログイン時に自動実行する `login` の引数。既定は off(勝手にログインしない)。
+/// OpenBao/Vault の OIDC を使うなら設定に書く: secrets.vault_login = -method=oidc
+pub const DEFAULT_VAULT_LOGIN: &str = "off";
+/// vault 参照の解決に使う CLI。OpenBao なら設定で secrets.vault_cmd = bao。
+pub const DEFAULT_VAULT_CMD: &str = "vault";
 
 /// 展開は明示のオプトイン。clone した直後のリポジトリで勝手に金庫が開く、
 /// という事故を防ぐため、既定では何もしない。
@@ -279,8 +278,8 @@ fn vault_fetch(path: &[&str], field: &str) -> Result<String, String> {
 }
 
 /// vault CLI のプロセスを作る。サーバは、環境に VAULT_ADDR / BAO_ADDR が
-/// あればそちらを尊重し、無ければ設定 `vault_addr`(既定 vault.avap.plus)を
-/// 両方の名前で渡す(bao は BAO_ADDR を先に見る)。
+/// あればそちらを尊重し、無ければ設定 `secrets.vault_addr` を両方の名前で渡す
+/// (bao は BAO_ADDR を先に見る)。空なら何も注入しない。
 fn vault_proc(cli: &str) -> Proc {
     let mut proc = Proc::new(cli);
     let has_addr = ["BAO_ADDR", "VAULT_ADDR"]
@@ -302,8 +301,7 @@ fn vault_proc(cli: &str) -> Proc {
 static VAULT_LOGIN: OnceLock<Result<(), String>> = OnceLock::new();
 
 /// 未ログインなら、設定 `vault_login` の引数で `login` を実行してから解決に進む
-/// (SPEC §10.4)。既定は avap の OIDC(`-method=oidc -path=id-avap-keycloak`)。
-/// `off` で無効化 — そのときは解決が vault 自身のエラーで fail-fast する。
+/// (SPEC §10.4)。既定は `off`(勝手にログインしない)。設定すると有効になる。
 ///
 /// CI は VAULT_TOKEN 等で認証済みの前提(`token lookup` が通る)なので login は
 /// 走らない。認証しない CI で vault 参照を使うなら `HAJ_VAULT_LOGIN=off` を置くこと
@@ -424,7 +422,7 @@ pub fn dry_run() -> ! {
 }
 
 /// リゾルバCLIの決定。環境変数 > 設定ファイル > 既定値(SPEC §8.3)。
-/// avap は `vault_cmd = bao` を設定ファイルに書いて差し替える。
+/// OpenBao なら `secrets.vault_cmd = bao` を設定ファイルに書いて差し替える。
 fn cli_for(env_key: &str, file_key: &str, default: &str) -> String {
     crate::config::Config::load()
         .get(env_key, file_key, default)

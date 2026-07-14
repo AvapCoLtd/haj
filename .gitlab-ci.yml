@@ -2,7 +2,7 @@
 #
 #   push/MR  → test (fmt / clippy / cargo test)
 #   master   → test → build → mirror (GitHub)
-#   tag      → test → build (avap) + build-public (公開) → publish (Package Registry)
+#   tag      → test → build (社内控え) + build-public (公開) → publish (Package Registry)
 #              → mirror (GitHub) → release (GitLab) + github-release (GitHub Releases)
 #
 # GitHub 連携(mirror / github-release)は CI 変数 GH_APP_ID / GH_APP_PRIVATE_KEY が
@@ -21,9 +21,6 @@ stages:
 variables:
   # CIの中でだけ使う。開発者の ~/.cargo は汚さない。
   CARGO_HOME: $CI_PROJECT_DIR/.cargo
-  # avap ビルドプロファイル(src/profile.rs)。社内向けの既定値を焼き込む。
-  # 公開ビルド(GitHub Releases 向け)はこの変数を外して別ジョブでビルドする。
-  HAJ_BUILD_AVAP: "1"
   CARGO_TERM_COLOR: always
   TARGET: x86_64-unknown-linux-musl
 
@@ -123,7 +120,7 @@ build:
     - if: $CI_COMMIT_TAG
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
 
-# 汎用パッケージレジストリへ上げる。install.sh が取りに来る先。
+# 汎用パッケージレジストリへ上げる(社内向けの控え。公開配布は GitHub Releases)。
 publish:
   stage: publish
   before_script:
@@ -167,12 +164,12 @@ release:
     description: |
       Linux x86_64 の静的バイナリ (musl)。glibc も bash も要らない。
 
-      ```sh
-      HAJ_TOKEN=<GitLabトークン> ./install.sh ${VERSION}
-      ```
+      公開配布は GitHub Releases:
+      https://github.com/AvapCoLtd/haj/releases/tag/${CI_COMMIT_TAG}
 
-      他のプラットフォームは `cargo build --release` で手元からビルドしてください
-      (依存クレートはゼロなので、Rust さえあれば通ります)。
+      ```sh
+      curl -fsSL https://raw.githubusercontent.com/AvapCoLtd/haj/master/install.sh | sh
+      ```
     assets:
       links:
         - name: haj-x86_64-unknown-linux-musl.tar.gz
@@ -204,13 +201,12 @@ mirror:
     - if: $CI_COMMIT_TAG
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
 
-# 公開プロファイルのビルド(GitHub Releases 用アセット)。
-# HAJ_BUILD_AVAP を外す = 社内の既定値を焼き込まない(SPEC §8.5)。
+# GitHub Releases 用アセット(x86_64 / aarch64)。バイナリは1種類だけ
+# (社内固有の既定値は焼き込まない。avap の値は各自の設定ファイルに書く)。
 .build-public: &build-public
   stage: build
   cache: []
   script:
-    - unset HAJ_BUILD_AVAP
     - rustup target add "$PUB_TARGET" 2>/dev/null || true
     - cargo build --release --locked --target "$PUB_TARGET"
     - mkdir -p dist-public
