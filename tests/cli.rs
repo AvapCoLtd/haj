@@ -837,3 +837,78 @@ fn ヘッダとフッタを挟んでコマンド一覧を出す() {
     let foot = out.find("末尾の案内").expect("footerが出ていない");
     assert!(head < body && body < foot, "順序が違う:\n{out}");
 }
+
+// ---- haj -C(SPEC §3.2): git と同じく実行ディレクトリを変える ----
+
+#[test]
+fn ハイフンcで別ディレクトリを起点に実行する() {
+    let sb = Sandbox::new("chdir");
+    sb.command(
+        "proj/.haj",
+        "deploy",
+        &conforming("このリポジトリ専用", "", "", "pwd"),
+    );
+
+    let cp = sb.path("nonexistent");
+    let cp = cp.to_str().unwrap();
+
+    // sb.dir(プロジェクトの外)から -C proj で入る → 探索も cwd も proj 起点
+    let out = sb.haj(&sb.dir, cp, &["-C", "proj", "deploy"]);
+    assert!(out.status.success(), "-C 越しに見つからない");
+    assert_eq!(
+        stdout(&out).trim(),
+        sb.path("proj")
+            .canonicalize()
+            .unwrap()
+            .display()
+            .to_string(),
+        "サブコマンドの cwd が移動先になっていない"
+    );
+
+    // -C 無しでは見えない(従来どおり)
+    let out = sb.haj(&sb.dir, cp, &["deploy"]);
+    assert_eq!(out.status.code(), Some(127));
+}
+
+#[test]
+fn ハイフンcは複数指定で相対に積み重なる() {
+    let sb = Sandbox::new("chdir-multi");
+    sb.command("a/b/.haj", "inner", &conforming("内側", "", "", "true"));
+
+    let cp = sb.path("nonexistent");
+    let out = sb.haj(
+        &sb.dir,
+        cp.to_str().unwrap(),
+        &["-C", "a", "-C", "b", "inner"],
+    );
+    assert!(out.status.success(), "-C の積み重ねが git と違う");
+}
+
+#[test]
+fn ハイフンcの移動先が無ければ実行しない() {
+    let sb = Sandbox::new("chdir-fail");
+    sb.command("sys", "greet", &conforming("あいさつ", "", "", "true"));
+
+    let cp = sb.path("sys/commands");
+    let out = sb.haj(
+        &sb.dir,
+        cp.to_str().unwrap(),
+        &["-C", "no-such-dir", "greet"],
+    );
+    assert_eq!(out.status.code(), Some(1));
+    let e = String::from_utf8_lossy(&out.stderr).to_string();
+    assert!(e.contains("移動できません"), "stderr: {e}");
+}
+
+#[test]
+fn helpにグローバルフラグの一覧が出る() {
+    let sb = Sandbox::new("help-flags");
+    let cp = sb.path("nonexistent");
+
+    let out = sb.haj(&sb.dir, cp.to_str().unwrap(), &["help"]);
+    let s = stdout(&out);
+    assert!(s.contains("グローバルフラグ"), "節が無い:\n{s}");
+    for f in ["-C ", "--secret ", "--env ", "--secretfile "] {
+        assert!(s.contains(f), "{f} がヘルプに無い:\n{s}");
+    }
+}
