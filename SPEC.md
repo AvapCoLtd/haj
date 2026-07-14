@@ -52,7 +52,7 @@ Python でも `haj` から等しく扱われる。逆に、コアはこの契約
 ### 2.2 `.haj/project`
 
 境界と名前は `.haj/project` で宣言する。**このファイルは無くてもよい**(既定値で成立する)。
-`key = value` を並べただけの形式で、`#` から行末はコメント。
+`key = value` を並べただけの形式で、`#` から行末はコメント。行末の `\` は継続。
 
 ```
 name = example-app
@@ -153,6 +153,15 @@ haj ie help      # → そのプロジェクトのコマンド一覧
 - **定義を読むのはユーザー設定だけ。** `.haj/project` などリポジトリ側からは定義
   できない — clone したリポジトリに `alias.mig = sh '...'` を仕込ませない
 - 語の分割は空白区切り(引用符は解釈しない)
+- 長いエイリアスは**行末の `\` で継続**できる(§8.2):
+
+```
+alias.oci = --secret OCI_CLI_USER=vault://users/me/oci/user \
+            --secret OCI_CLI_TENANCY=vault://users/me/oci/tenancy \
+            --secret-file OCI_CLI_KEY_FILE=vault://users/me/oci/private_key \
+            exec oci
+```
+
 - 素性は常に見える: `haj help` にエイリアスの節が出て、`haj which <名前>` は展開を
   表示し、TAB 補完にも名前が出る
 
@@ -394,6 +403,7 @@ haj __complete <名前> [語...]       → そのコマンドの --haj-complete 
 ### 8.2 形式
 
 **`.haj/project` と同じ `key = value`。** `#` から行末はコメント。
+**行末の `\` は継続**(シェルや git config と同じ)。継続行は空白1つで繋がる。
 
 設定ファイルの形式が2つあると「どっちがどっちだったか」を覚える羽目になる。
 入れ子が要るような項目は無く、信頼済みツリーの一覧のような**列**は direnv 方式で

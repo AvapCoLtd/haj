@@ -1086,3 +1086,31 @@ fn completionは補完スクリプトを出す() {
     );
     assert_eq!(sb.haj(&sb.dir, cp, &["completion"]).status.code(), Some(1));
 }
+
+#[test]
+fn 設定は行末のバックスラッシュで継続できる() {
+    let sb = Sandbox::new("cfg-cont");
+    // 長い alias は1行に収まらない。継続行で書けること。
+    sb.write(
+        "xdgconf/haj/config",
+        "alias.pj = -C proj \\\n           --secret HAJ_T_VALUE=hello \\\n           deploy\n",
+    );
+    sb.command(
+        "proj/.haj",
+        "deploy",
+        "#!/bin/sh\ncase \"$1\" in --haj-*) exit 0 ;; esac\nprintf '%s\\n' \"$HAJ_T_VALUE\"\n",
+    );
+
+    let out = Command::new(env!("CARGO_BIN_EXE_haj"))
+        .args(["pj"])
+        .current_dir(&sb.dir)
+        .env("HAJ_COMMAND_PATH", sb.path("nonexistent"))
+        .env("HAJ_NO_CACHE", "1")
+        .env("HOME", &sb.dir)
+        .env("XDG_CONFIG_HOME", sb.path("xdgconf"))
+        .output()
+        .unwrap();
+
+    assert!(out.status.success(), "継続行が繋がっていない");
+    assert_eq!(stdout(&out).trim(), "hello");
+}
