@@ -22,6 +22,13 @@ impl Sandbox {
         Self { dir }
     }
 
+    /// ただのファイルを置く(テンプレートや env ファイル用)。
+    fn write_file(&self, rel: &str, body: &str) {
+        let path = self.dir.join(rel);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, body).unwrap();
+    }
+
     /// 実行可能ファイルを置く。
     fn exe(&self, rel: &str, body: &str) -> PathBuf {
         let path = self.dir.join(rel);
@@ -518,4 +525,150 @@ fn ログイン済みならloginを叩かない() {
         !sb.dir.join("login-args").exists(),
         "ログイン済みなのにloginが走った"
     );
+}
+
+// ---- 明示的な受け渡し(SPEC §10.7): --secret / --env / --secretfile ----
+
+#[test]
+fn secretフラグは展開して環境変数で渡す() {
+    let sb = Sandbox::new("flag-secret");
+    let cp = sb.show_command();
+    let vault = sb.fake_vault();
+
+    // HAJ_SECRETS は立てない。フラグを打ったこと自体が同意
+    let out = sb.haj(
+        &cp,
+        &[
+            "--secret",
+            "HAJ_T_VALUE=vault://avap/data/hoge/fuga",
+            "show",
+        ],
+        &[("HAJ_VAULT_CMD", vault.to_str().unwrap())],
+    );
+    assert!(out.status.success(), "stderr: {}", stderr(&out));
+    assert_eq!(stdout(&out).trim(), "s3cr3t");
+}
+
+#[test]
+fn secretフラグの参照でない値は平文としてそのまま渡る() {
+    let sb = Sandbox::new("flag-plain");
+    let cp = sb.show_command();
+
+    let out = sb.haj(&cp, &["--secret", "HAJ_T_VALUE=hello", "show"], &[]);
+    assert!(out.status.success(), "stderr: {}", stderr(&out));
+    assert_eq!(stdout(&out).trim(), "hello");
+}
+
+#[test]
+fn 名前の後のフラグは解釈されずそのまま渡る() {
+    let sb = Sandbox::new("flag-after");
+    let cp = sb.args_command();
+
+    // SPEC §11: 名前以降は無解釈で素通し
+    let out = sb.haj(&cp, &["args", "--secret", "X=y"], &[]);
+    assert!(out.status.success(), "stderr: {}", stderr(&out));
+    assert_eq!(stdout(&out), "--secret\nX=y\n");
+}
+
+#[test]
+fn envフラグはファイルの値を値全体規則で展開して渡す() {
+    let sb = Sandbox::new("flag-env");
+    let cp = sb.show_command();
+    let vault = sb.fake_vault();
+    sb.write_file(
+        "mig.env",
+        "HAJ_T_VALUE = vault://avap/data/hoge/fuga\nHAJ_T_NOTE = 文中の op://x はただの文字列\n",
+    );
+
+    let out = sb.haj(
+        &cp,
+        &["--env", "mig.env", "show"],
+        &[("HAJ_VAULT_CMD", vault.to_str().unwrap())],
+    );
+    assert!(out.status.success(), "stderr: {}", stderr(&out));
+    assert_eq!(stdout(&out).trim(), "s3cr3t");
+}
+
+#[test]
+fn secretフラグはenvフラグより後に書けば勝つ() {
+    let sb = Sandbox::new("flag-order");
+    let cp = sb.show_command();
+    sb.write_file("a.env", "HAJ_T_VALUE = ファイルの値\n");
+
+    let out = sb.haj(
+        &cp,
+        &["--env", "a.env", "--secret", "HAJ_T_VALUE=あとの値", "show"],
+        &[],
+    );
+    assert!(out.status.success(), "stderr: {}", stderr(&out));
+    assert_eq!(stdout(&out).trim(), "あとの値");
+}
+
+#[test]
+fn secretfileはテンプレートを描画して0600で書く() {
+    let sb = Sandbox::new("flag-file");
+    let cp = sb.mark_command();
+    let vault = sb.fake_vault();
+    let op = sb.fake_op();
+    sb.write_file(
+        "config.ini.tpl",
+        "[db]\npassword = {{ with secret \"avap/data/hoge\" }}{{ .Data.data.fuga }}{{ end }}\ntoken = op://Infra/ci/token\n",
+    );
+
+    let out = sb.haj(
+        &cp,
+        &["--secretfile", "config.ini=config.ini.tpl", "mark"],
+        &[
+            ("HAJ_VAULT_CMD", vault.to_str().unwrap()),
+            ("HAJ_OP_CMD", op.to_str().unwrap()),
+        ],
+    );
+    assert!(out.status.success(), "stderr: {}", stderr(&out));
+    assert!(sb.dir.join("ran").exists(), "本体が実行されていない");
+
+    let rendered = fs::read_to_string(sb.dir.join("config.ini")).unwrap();
+    assert_eq!(rendered, "[db]\npassword = s3cr3t\ntoken = RESOLVED\n");
+
+    let mode = fs::metadata(sb.dir.join("config.ini"))
+        .unwrap()
+        .permissions()
+        .mode();
+    assert_eq!(mode & 0o777, 0o600, "mode が 0600 ではない: {mode:o}");
+}
+
+#[test]
+fn secretfileの解決に失敗したら書かずに止まる() {
+    let sb = Sandbox::new("flag-file-fail");
+    let cp = sb.mark_command();
+    let vault = sb.exe("bin/vault", "#!/bin/sh\nexit 1\n");
+    sb.write_file(
+        "bad.tpl",
+        "x = {{ with secret \"avap/data/hoge\" }}{{ .Data.data.fuga }}{{ end }}\n",
+    );
+
+    let out = sb.haj(
+        &cp,
+        &["--secretfile", "out.ini=bad.tpl", "mark"],
+        &[
+            ("HAJ_VAULT_CMD", vault.to_str().unwrap()),
+            ("HAJ_VAULT_LOGIN", "off"),
+        ],
+    );
+    assert_eq!(out.status.code(), Some(1));
+    assert!(!sb.dir.join("out.ini").exists(), "半端なファイルが残った");
+    assert!(!sb.dir.join("ran").exists(), "本体が実行されてしまった");
+}
+
+#[test]
+fn フラグの後にコマンドが無ければ使い方エラー() {
+    let sb = Sandbox::new("flag-usage");
+    let cp = sb.show_command();
+
+    let out = sb.haj(&cp, &["--secret", "K=v"], &[]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(stderr(&out).contains("使い方"), "stderr: {}", stderr(&out));
+
+    // 組み込みコマンドに続けて書くのも誤り
+    let out = sb.haj(&cp, &["--secret", "K=v", "help"], &[]);
+    assert_eq!(out.status.code(), Some(1));
 }

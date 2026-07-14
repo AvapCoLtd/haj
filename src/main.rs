@@ -24,16 +24,51 @@ use discovery::Command;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
+const USAGE_FLAGS: &str = "使い方: haj [--secret <名前>=<値>]... [--env <ファイル>]... [--secretfile <出力>=<テンプレート>]... <コマンド> [引数...]";
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let (name, rest) = match args.split_first() {
+
+    // haj自身のグローバルフラグ(SPEC §10.7)。**サブコマンド名の前にだけ**書ける。
+    // 名前以降は解釈しない(§11)ので、フラグ以外に当たったらそこで止まる。
+    let mut deliveries: Vec<secrets::Delivery> = Vec::new();
+    let mut idx = 0;
+    while idx < args.len() {
+        let flag = args[idx].as_str();
+        if !matches!(flag, "--secret" | "--env" | "--secretfile") {
+            break;
+        }
+        let Some(arg) = args.get(idx + 1) else {
+            die(&format!("{flag} には値が要ります\n{USAGE_FLAGS}"));
+        };
+        match secrets::Delivery::parse(flag, arg) {
+            Ok(d) => deliveries.push(d),
+            Err(e) => die(&e),
+        }
+        idx += 2;
+    }
+
+    let (name, rest) = match args[idx..].split_first() {
         None => {
+            if !deliveries.is_empty() {
+                die(&format!(
+                    "フラグの後にコマンド名がありません\n{USAGE_FLAGS}"
+                ));
+            }
             // 素の `haj` はヘルプ。何も分からない状態で来た人に一覧を見せるのが親切。
             print_help(None);
             std::process::exit(0);
         }
         Some((n, r)) => (n.as_str(), r),
     };
+
+    // 受け渡しフラグは「本体を実行する」ときにだけ意味がある。
+    // 組み込みコマンドに続けて書かれたら使い方の誤り(SPEC §10.7)。
+    if !deliveries.is_empty() && (discovery::is_reserved(name) || name.starts_with('-')) {
+        die(&format!(
+            "--secret / --env / --secretfile は <コマンド> の実行時にだけ使えます\n{USAGE_FLAGS}"
+        ));
+    }
 
     match name {
         "-h" | "--help" | "help" => {
@@ -136,6 +171,16 @@ fn main() {
         proc.args(rest);
     }
 
+    // 明示的な受け渡し(SPEC §10.7)。フラグを打ったこと自体が同意なので、
+    // HAJ_SECRETS のゲートは通らない。ambient な走査より後に適用する = 明示が勝つ。
+    // 書いた順に適用するので、同名の指定は後勝ち。
+    for d in &deliveries {
+        if let Err(e) = d.apply(&mut proc) {
+            eprintln!("haj: {e}");
+            std::process::exit(1);
+        }
+    }
+
     proc.env("HAJ_NAME", &cmd.name);
     match &cmd.root {
         Some(root) => proc.env("HAJ_ROOT", root),
@@ -172,6 +217,11 @@ fn main() {
         }
     }
     std::process::exit(126); // 「見つかったが実行できない」
+}
+
+fn die(msg: &str) -> ! {
+    eprintln!("haj: {msg}");
+    std::process::exit(1);
 }
 
 /// 1行目が `#!` で始まっていれば、そのインタプリタのパスを返す。
