@@ -83,53 +83,97 @@ fn vault_uri(rest: &str) -> Result<String, String> {
     vault_fetch(&segs[..segs.len() - 1], field)
 }
 
-const CANON: &str =
-    "vault template は正準形のみ対応です: {{ with secret \"<パス>\" }}{{ .Data.data.<フィールド> }}{{ end }}";
+const CANON: &str = "vault template を解釈できません。対応する形: \
+{{ with secret \"<パス>\" }} … {{ .Data.data.<フィールド> }} … {{ end }} \
+(ブロック内は地の文と複数フィールド可。空白制御 {{- -}} も可)";
 
-/// vault-agent template の正準形だけを解釈する。
+/// vault-agent template の `with secret` ブロックを解釈する。
 ///
-///   {{ with secret "<パス>" }}{{ .Data.data.<フィールド> }}{{ end }}
+///   {{ with secret "<パス>" }} … {{ .Data.data.<フィールド> }} … {{ end }}
 ///
-/// それ以外の式(printf を含むもの等)は解釈しない。テンプレートエンジンを
+/// vault-agent の実テンプレートに合わせて、ブロックの中には地の文と複数の
+/// フィールド参照を書け、Go template の空白制御(`{{-` / `-}}`)も効く。
+/// それ以外の式(printf / range 等)は解釈しない。テンプレートエンジンを
 /// 抱え込むことになるし、「どこまで動くのか」が誰にも分からなくなる。
 fn vault_template(value: &str) -> Result<String, String> {
     let t = value.trim();
-    match parse_canonical(t) {
-        Some((path, field, consumed)) if t[consumed..].trim().is_empty() => {
-            let segs: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
-            vault_fetch(&segs, &field)
+    let (rendered, consumed, _, _) = render_with_block(t)?;
+    if !t[consumed..].trim().is_empty() {
+        return Err(CANON.to_string());
+    }
+    Ok(rendered)
+}
+
+/// `{{ with secret "<パス>" }} … {{ end }}` を s の先頭(最初の `{{`)から1つ描画する。
+/// 返り値: (描画結果, 消費バイト数, 開きタグの左trim, 閉じタグの右trim)。
+fn render_with_block(s: &str) -> Result<(String, usize, bool, bool), String> {
+    let Some((body, mut rest, open_left, open_right)) = take_block(s) else {
+        return Err(CANON.to_string());
+    };
+    let Some(path) = body
+        .strip_prefix("with secret")
+        .map(str::trim)
+        .and_then(|p| p.strip_prefix('"'))
+        .and_then(|p| p.strip_suffix('"'))
+        .filter(|p| !p.is_empty())
+    else {
+        return Err(CANON.to_string());
+    };
+    let segs: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+
+    let mut out = String::new();
+    // 直前のタグが右trim(`-}}`)なら、続く地の文の左端の空白を削る(Go と同じ)
+    let mut trim_pending = open_right;
+    loop {
+        let Some(brace) = rest.find("{{") else {
+            return Err("vault template が {{ end }} で閉じていません".to_string());
+        };
+        let mut text = &rest[..brace];
+        let Some((body, r, left, right)) = take_block(&rest[brace..]) else {
+            return Err(CANON.to_string());
+        };
+        if trim_pending {
+            text = text.trim_start();
         }
-        _ => Err(CANON.to_string()),
+        if left {
+            text = text.trim_end();
+        }
+        out.push_str(text);
+        if body == "end" {
+            return Ok((out, s.len() - r.len(), open_left, right));
+        }
+        let Some(field) = body
+            .strip_prefix(".Data.data.")
+            .map(str::trim)
+            .filter(|f| !f.is_empty() && !f.contains(char::is_whitespace))
+        else {
+            return Err(CANON.to_string());
+        };
+        out.push_str(&vault_fetch(&segs, field)?);
+        rest = r;
+        trim_pending = right;
     }
 }
 
-/// 正準形トリプルを先頭から1つ読む。読めたら (パス, フィールド, 消費したバイト数)。
-/// テンプレート描画(--secret-file)が同じ規則で文中のブロックを置換できるように、
-/// 「値全体」の判定は呼び出し側に委ねる。
-fn parse_canonical(s: &str) -> Option<(String, String, usize)> {
-    let (b1, r1) = take_block(s)?;
-    let (b2, r2) = take_block(r1)?;
-    let (b3, r3) = take_block(r2)?;
-    if b3 != "end" {
-        return None;
-    }
-    let path = b1
-        .strip_prefix("with secret")?
-        .trim()
-        .strip_prefix('"')?
-        .strip_suffix('"')?;
-    let field = b2.strip_prefix(".Data.data.")?.trim();
-    if path.is_empty() || field.is_empty() || field.contains(char::is_whitespace) {
-        return None;
-    }
-    Some((path.to_string(), field.to_string(), s.len() - r3.len()))
-}
-
-/// 先頭の `{{ ... }}` を1つ取る(手前の空白は読み飛ばす)。(中身, 残り) を返す。
-fn take_block(s: &str) -> Option<(&str, &str)> {
+/// 先頭の `{{ … }}` を1つ取る(手前の空白は読み飛ばす)。Go template の空白制御
+/// (`{{- … -}}`。`-` はタグの内側、空白を挟んで書く)を認識して、
+/// (中身, 残り, 左trim, 右trim) を返す。
+fn take_block(s: &str) -> Option<(&str, &str, bool, bool)> {
     let inner = s.trim_start().strip_prefix("{{")?;
+    let (inner, left) = match inner.strip_prefix('-') {
+        // Go の規約どおり `-` の後には空白が要る
+        Some(r) if r.starts_with(char::is_whitespace) => (r, true),
+        _ => (inner, false),
+    };
     let end = inner.find("}}")?;
-    Some((inner[..end].trim(), &inner[end + 2..]))
+    let rest = &inner[end + 2..];
+    let body = inner[..end].trim_end();
+    let (body, right) = match body.strip_suffix('-') {
+        // 同じく `-` の前には空白が要る(パス末尾の `-` と紛れない)
+        Some(b) if b.ends_with(char::is_whitespace) => (b, true),
+        _ => (body, false),
+    };
+    Some((body.trim(), rest, left, right))
 }
 
 /// 明示的な受け渡し(SPEC §10.2)。サブコマンド名の**前**のグローバルフラグ。
@@ -185,7 +229,7 @@ impl Delivery {
                 Ok(vec![("--secret".to_string(), name.clone(), value.clone())])
             }
             Delivery::EnvFile(file) => {
-                let content = std::fs::read_to_string(file)
+                let content = std::fs::read_to_string(expand_tilde(file))
                     .map_err(|e| format!("--env-file {file}: 読めません: {e}"))?;
                 let mut rows: Vec<(String, String, String)> = crate::config::parse_kv(&content)
                     .into_iter()
@@ -227,7 +271,7 @@ impl Delivery {
                 Ok(())
             }
             Delivery::EnvFile(file) => {
-                let content = std::fs::read_to_string(file)
+                let content = std::fs::read_to_string(expand_tilde(file))
                     .map_err(|e| format!("--env-file {file}: 読めません: {e}"))?;
                 for (k, v) in crate::config::parse_kv(&content) {
                     // 値全体規則。ファイルの値は埋め込みを解釈しない
@@ -245,7 +289,7 @@ impl Delivery {
                         .map_err(|e| format!("--secret-file {target}: {e}"))?
                         .unwrap_or_else(|| spec.clone())
                 } else {
-                    let tpl = std::fs::read_to_string(spec)
+                    let tpl = std::fs::read_to_string(expand_tilde(spec))
                         .map_err(|e| format!("--secret-file {spec}: 読めません: {e}"))?;
                     render_template(&tpl).map_err(|e| format!("--secret-file {spec}: {e}"))?
                 };
@@ -318,14 +362,14 @@ fn render_template(content: &str) -> Result<String, String> {
     let mut out = String::new();
     let mut rest = content;
     while let Some(start) = rest.find("{{") {
-        out.push_str(&rest[..start]);
-        let tail = &rest[start..];
-        let Some((path, field, len)) = parse_canonical(tail) else {
-            return Err(format!("テンプレート内の {CANON}"));
-        };
-        let segs: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
-        out.push_str(&vault_fetch(&segs, &field)?);
-        rest = &tail[len..];
+        let (rendered, consumed, trim_left, trim_right) = render_with_block(&rest[start..])?;
+        let text = &rest[..start];
+        out.push_str(if trim_left { text.trim_end() } else { text });
+        out.push_str(&rendered);
+        rest = &rest[start + consumed..];
+        if trim_right {
+            rest = rest.trim_start();
+        }
     }
     out.push_str(rest);
 
