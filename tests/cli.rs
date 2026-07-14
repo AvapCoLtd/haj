@@ -1187,3 +1187,28 @@ fn execの補完はそのコマンド自身へ委譲する() {
         "helpにdescが無い:\n{help}"
     );
 }
+
+#[test]
+fn completionのzsh版はevalしても補完関数を即実行しない() {
+    let sb = Sandbox::new("comp-eval");
+    let cp = sb.path("nonexistent");
+    let out = sb.haj(&sb.dir, cp.to_str().unwrap(), &["completion", "zsh"]);
+    let s = stdout(&out);
+
+    // eval で読み込まれたときは compdef で登録するだけにする。
+    // 補完コンテキストの外で _haj を呼ぶと _describe が
+    // "can only be called from completion function" で怒る。
+    assert!(
+        s.contains("compdef _haj haj"),
+        "eval 用の登録が無い:\n{s}"
+    );
+    assert!(
+        s.contains("funcstack[1]"),
+        "autoload と eval を見分けていない:\n{s}"
+    );
+    // 無条件の即時呼び出しが残っていないこと
+    assert!(
+        !s.lines().any(|l| l.trim() == "_haj \"$@\""),
+        "無条件の即時呼び出しが残っている:\n{s}"
+    );
+}
