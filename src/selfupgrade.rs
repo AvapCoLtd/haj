@@ -307,13 +307,25 @@ fn latest_version(cfg: &Config) -> Result<String, String> {
     }
 
     let body = String::from_utf8_lossy(&out.stdout);
-    let tag = body
-        .split("\"tag_name\":\"")
-        .nth(1)
-        .and_then(|rest| rest.split('"').next())
+    let tag = first_json_string(&body, "tag_name")
         .ok_or("リリースが見つかりません。版を明示してください: haj selfupgrade 0.1.0")?;
 
     Ok(tag.trim_start_matches('v').to_string())
+}
+
+/// JSON から最初の `"<鍵>": "<値>"` の値を抜く。
+///
+/// JSONパーサは持ち込まない(欲しいのは1つの文字列だけ)。ただし整形の揺れは
+/// 吸収する必要がある — **GitLab は `"tag_name":"v1"`、GitHub は `"tag_name": "v1"`**
+/// とコロンの後の空白が違い、決め打ちすると片方で読めない。
+fn first_json_string(body: &str, key: &str) -> Option<String> {
+    let needle = format!("\"{key}\"");
+    let rest = body.split_once(&needle)?.1;
+    let rest = rest.trim_start();
+    let rest = rest.strip_prefix(':')?.trim_start();
+    let rest = rest.strip_prefix('"')?;
+    let value = rest.split('"').next()?;
+    (!value.is_empty()).then(|| value.to_string())
 }
 
 fn download(cfg: &Config, url: &str, dest: &Path) -> Result<(), String> {
