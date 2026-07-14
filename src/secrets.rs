@@ -13,6 +13,12 @@
 use std::env;
 use std::io::Write;
 use std::process::{Command as Proc, Stdio};
+use std::sync::OnceLock;
+
+/// vault サーバの既定。環境に VAULT_ADDR / BAO_ADDR があればそちらを尊重する。
+pub const DEFAULT_VAULT_ADDR: &str = "https://vault.avap.plus";
+/// 未ログイン時に自動実行する `login` の既定引数。`off` で無効化。
+pub const DEFAULT_VAULT_LOGIN: &str = "-method=oidc -path=id-avap-keycloak";
 
 /// 展開は明示のオプトイン。clone した直後のリポジトリで勝手に金庫が開く、
 /// という事故を防ぐため、既定では何もしない。
@@ -22,9 +28,14 @@ pub fn enabled() -> bool {
 
 /// 値が参照なら展開して Some を、参照でなければ None を返す(触らない)。
 /// 解決に失敗したら Err。呼び出し側は本体を実行せずに止まること(fail-fast)。
-pub fn expand(value: &str) -> Result<Option<String>, String> {
-    // 値全体が参照のものを先に見る。op だけは inject の意味論(埋め込みも展開)に
-    // 従うため「含まれていれば」で拾う。順序が入れ替わると、vault:// の中に
+///
+/// `embedded_op` は「op:// を**含む**だけで inject に回す」かどうか。
+/// argv のように**人が明示的に書いた**値だけ true にする。環境変数の走査で
+/// これをやると、参照をたまたま文中に含む変数(GitLab CI が置く
+/// CI_MERGE_REQUEST_DESCRIPTION に op:// の例文が入っている、等)を解決しようと
+/// して、無関係な理由で全体が止まる。
+pub fn expand(value: &str, embedded_op: bool) -> Result<Option<String>, String> {
+    // 値全体が参照のものを先に見る。順序が入れ替わると、vault:// の中に
     // op:// を含むような値の解釈が変わってしまう。
     if let Some(rest) = value.strip_prefix("vault://") {
         return vault_uri(rest).map(Some);
@@ -45,19 +56,20 @@ pub fn expand(value: &str) -> Result<Option<String>, String> {
             Err(e) => Err(format!("file://{path}: 読めません: {e}")),
         };
     }
-    if value.contains("op://") {
+    if value.starts_with("op://") || (embedded_op && value.contains("op://")) {
         return op_inject(value).map(Some);
     }
     Ok(None)
 }
 
 /// dry-run(`haj secrets`)用。解決せずに「展開対象か」だけ答える。
+/// 環境変数の走査と同じ規則(op も値全体のときだけ)。
 pub fn is_reference(value: &str) -> bool {
     value.starts_with("vault://")
         || (value.starts_with("{{") && value.ends_with("}}"))
         || value.starts_with("env://")
         || value.starts_with("file://")
-        || value.contains("op://")
+        || value.starts_with("op://")
 }
 
 /// `vault://<パス>/<フィールド>` — 最後のセグメントがフィールド、残りがパス。
@@ -118,8 +130,9 @@ fn vault_template(value: &str) -> Result<String, String> {
 /// `vault kv get` で1フィールドを取る。パスの2セグメント目が `data` なら
 /// KV v2 の API パス(template の書き方)とみなし、mount と相対パスに読み替える。
 fn vault_fetch(path: &[&str], field: &str) -> Result<String, String> {
-    let cli = env_or("HAJ_VAULT_CMD", "vault");
-    let mut proc = Proc::new(&cli);
+    let cli = cli_for("HAJ_VAULT_CMD", "vault_cmd", "bao");
+    ensure_vault_login(&cli)?;
+    let mut proc = vault_proc(&cli);
     proc.args(["kv", "get", &format!("-field={field}")]);
     if path.len() >= 3 && path[1] == "data" {
         proc.arg(format!("-mount={}", path[0]));
@@ -130,10 +143,79 @@ fn vault_fetch(path: &[&str], field: &str) -> Result<String, String> {
     run(proc, &cli, None)
 }
 
+/// vault CLI のプロセスを作る。サーバは、環境に VAULT_ADDR / BAO_ADDR が
+/// あればそちらを尊重し、無ければ設定 `vault_addr`(既定 vault.avap.plus)を
+/// 両方の名前で渡す(bao は BAO_ADDR を先に見る)。
+fn vault_proc(cli: &str) -> Proc {
+    let mut proc = Proc::new(cli);
+    let has_addr = ["BAO_ADDR", "VAULT_ADDR"]
+        .iter()
+        .any(|k| env::var(k).map(|v| !v.is_empty()).unwrap_or(false));
+    if !has_addr {
+        let (addr, _) =
+            crate::config::Config::load().get("VAULT_ADDR", "vault_addr", DEFAULT_VAULT_ADDR);
+        proc.env("VAULT_ADDR", &addr).env("BAO_ADDR", &addr);
+    }
+    proc
+}
+
+/// vault のログイン状態はプロセスで一度だけ確かめる。参照が何個あっても
+/// `token lookup` と `login` が二度走らないように。
+static VAULT_LOGIN: OnceLock<Result<(), String>> = OnceLock::new();
+
+/// 未ログインなら、設定 `vault_login` の引数で `login` を実行してから解決に進む
+/// (SPEC §10.4)。既定は avap の OIDC(`-method=oidc -path=id-avap-keycloak`)。
+/// `off` で無効化 — そのときは解決が vault 自身のエラーで fail-fast する。
+///
+/// CI は VAULT_TOKEN 等で認証済みの前提(`token lookup` が通る)なので login は
+/// 走らない。認証しない CI で vault 参照を使うなら `HAJ_VAULT_LOGIN=off` を置くこと
+/// (OIDC はブラウザと人を待つ)。
+fn ensure_vault_login(cli: &str) -> Result<(), String> {
+    VAULT_LOGIN
+        .get_or_init(|| {
+            let logged_in = vault_proc(cli)
+                .args(["token", "lookup"])
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false);
+            if logged_in {
+                return Ok(());
+            }
+            let (args, _) = crate::config::Config::load().get(
+                "HAJ_VAULT_LOGIN",
+                "vault_login",
+                DEFAULT_VAULT_LOGIN,
+            );
+            if args == "off" {
+                return Ok(()); // 自動ログインは明示的に無効化されている
+            }
+            let args: Vec<&str> = args.split_whitespace().collect();
+            eprintln!(
+                "haj: vault にログインします: {cli} login {}",
+                args.join(" ")
+            );
+            // 端末を継ぐ。OIDC はブラウザと人を待つので、ここにタイムアウトは無い。
+            let status = vault_proc(cli)
+                .arg("login")
+                .args(&args)
+                .status()
+                .map_err(|e| format!("{cli} login を実行できません: {e}"))?;
+            if status.success() {
+                Ok(())
+            } else {
+                Err(format!("{cli} login が失敗しました"))
+            }
+        })
+        .clone()
+}
+
 /// op は書式を解釈せず、値ごと `op inject` に渡す。埋め込みの展開も
 /// 意味論もすべて inject に従う。
 fn op_inject(value: &str) -> Result<String, String> {
-    let cli = env_or("HAJ_OP_CMD", "op");
+    let cli = cli_for("HAJ_OP_CMD", "op_cmd", "op");
     let mut proc = Proc::new(&cli);
     proc.arg("inject");
     run(proc, &cli, Some(value))
@@ -169,7 +251,10 @@ fn run(mut proc: Proc, cli: &str, stdin: Option<&str>) -> Result<String, String>
         .wait_with_output()
         .map_err(|e| format!("{cli} の結果を読めません: {e}"))?;
     if !out.status.success() {
-        return Err(format!("{cli} が失敗しました (exit {})", exit_code(&out.status)));
+        return Err(format!(
+            "{cli} が失敗しました (exit {})",
+            exit_code(&out.status)
+        ));
     }
     String::from_utf8(out.stdout)
         .map(trim_newline)
@@ -185,9 +270,7 @@ pub fn dry_run() -> ! {
         println!("HAJ_SECRETS が設定されていません (展開は無効。参照はただの文字列として渡ります)");
     }
 
-    let mut refs: Vec<(String, String)> = env::vars()
-        .filter(|(_, v)| is_reference(v))
-        .collect();
+    let mut refs: Vec<(String, String)> = env::vars().filter(|(_, v)| is_reference(v)).collect();
     refs.sort();
 
     if refs.is_empty() {
@@ -202,11 +285,12 @@ pub fn dry_run() -> ! {
     std::process::exit(0);
 }
 
-fn env_or(key: &str, default: &str) -> String {
-    env::var(key)
-        .ok()
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| default.to_string())
+/// リゾルバCLIの決定。環境変数 > 設定ファイル > 既定値(SPEC §8.3)。
+/// avap は `vault_cmd = bao` を設定ファイルに書いて差し替える。
+fn cli_for(env_key: &str, file_key: &str, default: &str) -> String {
+    crate::config::Config::load()
+        .get(env_key, file_key, default)
+        .0
 }
 
 /// 末尾の改行1つを落とす。CLI や credential ファイルが付けるもの。

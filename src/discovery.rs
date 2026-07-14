@@ -282,7 +282,7 @@ pub fn is_valid_name(name: &str) -> bool {
 pub fn is_reserved(name: &str) -> bool {
     matches!(
         name,
-        "help" | "commands" | "which" | "config" | "selfupgrade" | "__complete"
+        "help" | "commands" | "which" | "config" | "selfupgrade" | "secrets" | "__complete"
     )
 }
 
