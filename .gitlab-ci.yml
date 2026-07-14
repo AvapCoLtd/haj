@@ -1,7 +1,12 @@
 # haj の CI。
 #
 #   push/MR  → test (fmt / clippy / cargo test)
-#   tag      → test → build (musl静的バイナリ) → publish (Package Registry) → release
+#   master   → test → build → mirror (GitHub)
+#   tag      → test → build (avap) + build-public (公開) → publish (Package Registry)
+#              → mirror (GitHub) → release (GitLab) + github-release (GitHub Releases)
+#
+# GitHub 連携(mirror / github-release)は CI 変数 GH_APP_ID / GH_APP_PRIVATE_KEY が
+# あるときだけ走る(ci/github.sh 参照。App: haj-release、鍵の正は bao)。
 #
 # イメージは avap.plus のプロキシキャッシュ経由で取る(このインスタンスの作法)。
 # rust:1-alpine は musl がネイティブなので、クロスコンパイルの仕掛けが要らずに
@@ -177,4 +182,82 @@ release:
           url: $CI_API_V4_URL/projects/$CI_PROJECT_ID/packages/generic/haj/${VERSION}/haj-x86_64-unknown-linux-musl.tar.gz.sha256
           link_type: other
   rules:
+    - if: $CI_COMMIT_TAG
+
+# ---- 公開配布 (Issue #10) ----------------------------------------------------
+
+# GitHub AvapCoLtd/haj へのミラー。GitLab が正で、ミラーは常に GitLab の姿へ合わせる。
+# App token は1時間で失効するため GitLab 組み込みミラーは使えない(ジョブ駆動)。
+mirror:
+  stage: publish
+  image: avap.plus/dockerhub/library/alpine:3
+  before_script:
+    - apk add --no-cache git curl openssl >/dev/null
+  cache: []
+  needs:
+    - job: test
+  script:
+    - sh ci/github.sh mirror
+  rules:
+    - if: '$GH_APP_ID == null'
+      when: never
+    - if: $CI_COMMIT_TAG
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+# 公開プロファイルのビルド(GitHub Releases 用アセット)。
+# HAJ_BUILD_AVAP を外す = 社内の既定値を焼き込まない(SPEC §8.5)。
+.build-public: &build-public
+  stage: build
+  cache: []
+  script:
+    - unset HAJ_BUILD_AVAP
+    - rustup target add "$PUB_TARGET" 2>/dev/null || true
+    - cargo build --release --locked --target "$PUB_TARGET"
+    - mkdir -p dist-public
+    - cp "target/${PUB_TARGET}/release/haj" dist-public/haj
+    - tar -czf "dist-public/haj-${PUB_TARGET}.tar.gz" -C dist-public haj
+    - rm dist-public/haj
+    - cd dist-public && sha256sum "haj-${PUB_TARGET}.tar.gz" > "haj-${PUB_TARGET}.tar.gz.sha256"
+  artifacts:
+    paths:
+      - dist-public/
+    expire_in: 1 week
+  rules:
+    - if: '$GH_APP_ID == null'
+      when: never
+    - if: $CI_COMMIT_TAG
+
+build-public-x86_64:
+  <<: *build-public
+  variables:
+    PUB_TARGET: x86_64-unknown-linux-musl
+
+build-public-aarch64:
+  <<: *build-public
+  # aarch64-musl のクロスツールチェーン入りイメージ。リンカの用意が要らない。
+  image: avap.plus/dockerhub/messense/rust-musl-cross:aarch64-musl
+  before_script: []
+  variables:
+    PUB_TARGET: aarch64-unknown-linux-musl
+
+# GitHub Releases。タグはミラー済みであること(needs: mirror)。
+github-release:
+  stage: release
+  image: avap.plus/dockerhub/library/alpine:3
+  before_script:
+    - apk add --no-cache curl openssl >/dev/null
+  cache: []
+  needs:
+    - job: mirror
+    - job: build-public-x86_64
+      artifacts: true
+    - job: build-public-aarch64
+      artifacts: true
+    - job: version
+      artifacts: true
+  script:
+    - sh ci/github.sh release "$CI_COMMIT_TAG"
+  rules:
+    - if: '$GH_APP_ID == null'
+      when: never
     - if: $CI_COMMIT_TAG

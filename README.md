@@ -8,7 +8,7 @@
 ```console
 $ cd ~/repos/webapp && haj
  hajコマンド (haj help <名前> で詳細):
-   web      基本版(webapp)の操作
+   web        基本版(webapp)の操作
    ie         拡張版(example-app)の操作
    mig        DBマイグレーション (status/up/down/create/edit)
    xdebug     Xdebugの有効/無効を切り替え
