@@ -84,12 +84,25 @@ impl Config {
             .iter()
             .filter_map(|(k, val)| {
                 let name = k.strip_prefix("alias.")?;
-                (!name.is_empty() && !val.is_empty() && !crate::discovery::is_reserved(name))
-                    .then(|| (name.to_string(), val.clone()))
+                // `alias.<名前>.desc` は説明であってエイリアスではない
+                (!name.is_empty()
+                    && !name.ends_with(".desc")
+                    && !val.is_empty()
+                    && !crate::discovery::is_reserved(name))
+                .then(|| (name.to_string(), val.clone()))
             })
             .collect();
         v.sort();
         v
+    }
+
+    /// `alias.<名前>.desc` — 一覧と補完に出す一行説明。
+    /// 長いエイリアスは展開をそのまま出すと読めないので、これを書ける。
+    pub fn alias_desc(&self, name: &str) -> Option<String> {
+        self.map
+            .get(&format!("alias.{name}.desc"))
+            .filter(|v| !v.is_empty())
+            .cloned()
     }
 
     /// 既定値を持たない値(トークンなど)。無ければ None。
