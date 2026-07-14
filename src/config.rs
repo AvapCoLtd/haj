@@ -109,44 +109,67 @@ pub const KEYS: &[(&str, &str, &str, &str)] = &[
         "2000",
         "規約フック (--haj-describe 等) のタイムアウト (ミリ秒)",
     ),
-    ("HAJ_OP_CMD", "op_cmd", "op", "op 参照の解決に使う CLI"),
+    (
+        "HAJ_OP_CMD",
+        "secrets.op_cmd",
+        "op",
+        "op 参照の解決に使う CLI",
+    ),
     (
         "HAJ_VAULT_CMD",
-        "vault_cmd",
+        "secrets.vault_cmd",
         "bao",
         "vault 参照の解決に使う CLI",
     ),
     (
         "VAULT_ADDR",
-        "vault_addr",
+        "secrets.vault_addr",
         crate::secrets::DEFAULT_VAULT_ADDR,
         "vault サーバ (環境の VAULT_ADDR / BAO_ADDR が優先)",
     ),
     (
         "HAJ_VAULT_LOGIN",
-        "vault_login",
+        "secrets.vault_login",
         crate::secrets::DEFAULT_VAULT_LOGIN,
         "未ログイン時に自動実行する login の引数。off で無効化",
     ),
     (
         "HAJ_GITLAB",
-        "gitlab",
+        "selfupgrade.gitlab",
         "https://gitlab.avaper.day",
         "haj 自身の取得元 GitLab (selfupgrade)",
     ),
     (
         "HAJ_PROJECT_ID",
-        "project_id",
+        "selfupgrade.project_id",
         "788",
         "haj のプロジェクト ID",
     ),
     (
         "HAJ_TARGET",
-        "target",
+        "selfupgrade.target",
         "x86_64-unknown-linux-musl",
         "取得するビルドのターゲット",
     ),
 ];
+
+/// 鍵の名前空間(ドットの前)。git の `user.name` と同じ流儀で、TOML を
+/// 持ち込まずにグループ分けする。ドット無しはコア。
+fn group_of(file_key: &str) -> &str {
+    match file_key.split_once('.') {
+        Some((g, _)) => g,
+        None => "",
+    }
+}
+
+fn group_title(group: &str) -> &str {
+    match group {
+        "" => "コア (探索と規約)",
+        "secrets" => "secrets: シークレット参照の解決 (SPEC §10)",
+        "selfupgrade" => "selfupgrade: haj自身の更新 (SPEC §9.1)",
+        other => other,
+    }
+}
 
 /// `haj config --init` — 設定できる鍵と既定値をすべて、設定ファイルの雛形として出す。
 ///
@@ -156,7 +179,14 @@ pub fn template() {
     println!("# haj の設定");
     println!("# 形式: key = value。'#' から行末はコメント。すべて省略可 (既定値で動く)。");
     println!("# 優先順位: 環境変数 > 設定ファイル > 既定値。実効値は `haj config` で確認。");
+    let mut group = None;
     for (env_key, file_key, default, desc) in KEYS {
+        let g = group_of(file_key);
+        if group != Some(g) {
+            group = Some(g);
+            println!();
+            println!("# ------ {} ------", group_title(g));
+        }
         println!();
         println!("# {desc} (環境変数: {env_key})");
         println!("# {file_key} = {default}");
@@ -164,8 +194,8 @@ pub fn template() {
     println!();
     println!("# selfupgrade が使う GitLab トークン (環境変数: HAJ_TOKEN)。既定値なし。");
     println!("# 平文でも、シークレット参照でもよい (SPEC §8.4):");
-    println!("# token = glpat-xxxxxxxx");
-    println!("# token = vault://users/<名前>/gitlab-pat/gitlab.avaper.day/token");
+    println!("# selfupgrade.token = glpat-xxxxxxxx");
+    println!("# selfupgrade.token = vault://users/<名前>/gitlab-pat/gitlab.avaper.day/token");
 }
 
 /// `haj config` の出力。
@@ -185,11 +215,17 @@ pub fn show() {
     let width = KEYS
         .iter()
         .map(|(_, k, _, _)| k.len())
-        .chain(std::iter::once("token".len()))
+        .chain(std::iter::once("selfupgrade.token".len()))
         .max()
         .unwrap_or(0);
 
+    let mut group = None;
     for (env_key, file_key, default, _) in KEYS {
+        let g = group_of(file_key);
+        if group.is_some() && group != Some(g) {
+            println!(); // グループの切れ目
+        }
+        group = Some(g);
         let (v, src) = cfg.get(env_key, file_key, default);
         println!(
             "  {file_key:width$}  {v}   ({})",
@@ -200,20 +236,20 @@ pub fn show() {
 
     // トークンの実体は出さない。ただし**参照**なら参照をそのまま出す —
     // 参照は秘密ではないし、どこの金庫を指しているかは調べたい情報(SPEC §8.4)。
-    match cfg.get_opt("HAJ_TOKEN", "token") {
+    match cfg.get_opt("HAJ_TOKEN", "selfupgrade.token") {
         Some((v, src)) if crate::secrets::is_reference(&v) => println!(
             "  {:width$}  {v}   ({})",
-            "token",
+            "selfupgrade.token",
             src.label(),
             width = width
         ),
         Some((_, src)) => println!(
             "  {:width$}  ********   ({})",
-            "token",
+            "selfupgrade.token",
             src.label(),
             width = width
         ),
-        None => println!("  {:width$}  (未設定)", "token", width = width),
+        None => println!("  {:width$}  (未設定)", "selfupgrade.token", width = width),
     }
 
     println!();

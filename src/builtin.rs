@@ -88,8 +88,7 @@ haj which [--all] <名前> — どの定義が効いているのかを見る。
 迷ったら実行する前にこれで確認すること。"
             .to_string(),
 
-        "config" => format!(
-            "\
+        "config" => "\
 haj config — 設定の実効値と、その出所を見る。
 
   haj config           実効値と出所の一覧
@@ -104,18 +103,17 @@ haj config — 設定の実効値と、その出所を見る。
 形式は key = value。'#' から行末はコメント。.haj/project と同じ形式なので、
 覚えることは1つで済む。
 
-  gitlab     = https://gitlab.avaper.day
-  project_id = 788
-  target     = {target}
-  token      = glpat-xxxxxxxx
+  selfupgrade.token = vault://users/<名前>/gitlab-pat/gitlab.avaper.day/token
+  secrets.vault_cmd = bao
+
+鍵は git と同じドット記法で名前空間を持つ (selfupgrade.* / secrets.* / ドット無しはコア)。
 
 値は 環境変数 > 設定ファイル > 既定値 の順で決まる。この3段が見えないと
 「なぜ効かないのか」を調べる手段が無くなるので、haj config は必ず出所を言う
 (haj which が探索順を見せるのと同じ理由)。
 
-token は値を出さない。設定されているかと、どこから来たかだけを出す。",
-            target = crate::selfupgrade::DEFAULT_TARGET
-        ),
+selfupgrade.token の実体は出さない (参照なら参照を出す)。"
+            .to_string(),
 
         "exec" => "\
 haj exec <プログラム> [引数...] — PATH のコマンドにシークレットを注入して実行する。

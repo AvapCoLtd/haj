@@ -342,7 +342,7 @@ fn リゾルバの実行ファイルは設定でも差し替えられる() {
     fs::create_dir_all(&confdir).unwrap();
     fs::write(
         confdir.join("config"),
-        format!("vault_cmd = {}\n", vault.display()),
+        format!("secrets.vault_cmd = {}\n", vault.display()),
     )
     .unwrap();
 
@@ -844,7 +844,7 @@ fn 設定のtokenの参照はselfupgradeが使うときに展開される() {
     fs::create_dir_all(&confdir).unwrap();
     fs::write(
         confdir.join("config"),
-        "token = vault://users/hajime/gitlab-pat/gitlab.avaper.day/token\n",
+        "selfupgrade.token = vault://users/hajime/gitlab-pat/gitlab.avaper.day/token\n",
     )
     .unwrap();
 
@@ -874,7 +874,7 @@ fn configはtokenの参照をそのまま出す() {
     fs::create_dir_all(&confdir).unwrap();
     fs::write(
         confdir.join("config"),
-        "token = vault://users/hajime/gitlab-pat/gitlab.avaper.day/token\n",
+        "selfupgrade.token = vault://users/hajime/gitlab-pat/gitlab.avaper.day/token\n",
     )
     .unwrap();
 
@@ -915,14 +915,14 @@ fn config_initは全ての鍵と既定値を雛形として出す() {
     for key in [
         "command_path",
         "hook_timeout_ms",
-        "op_cmd",
-        "vault_cmd",
-        "vault_addr",
-        "vault_login",
-        "gitlab",
-        "project_id",
-        "target",
-        "token",
+        "secrets.op_cmd",
+        "secrets.vault_cmd",
+        "secrets.vault_addr",
+        "secrets.vault_login",
+        "selfupgrade.gitlab",
+        "selfupgrade.project_id",
+        "selfupgrade.target",
+        "selfupgrade.token",
     ] {
         assert!(
             s.contains(&format!("# {key} ")) || s.contains(&format!("# {key} =")),
