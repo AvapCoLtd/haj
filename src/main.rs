@@ -26,7 +26,7 @@ use discovery::Command;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
-const USAGE_FLAGS: &str = "使い方: haj [-C <ディレクトリ>] [--secret <名前>=<値>]... [--env <ファイル>]... [--secretfile <出力>=<テンプレート>]... <コマンド> [引数...]";
+const USAGE_FLAGS: &str = "使い方: haj [-C <ディレクトリ>] [--secret <名前>=<値>]... [--env-file <ファイル>]... [--secret-file <名前|パス>=<参照|テンプレート>]... <コマンド> [引数...]";
 
 fn main() {
     let mut args: Vec<String> = std::env::args().skip(1).collect();
@@ -43,7 +43,7 @@ fn main() {
         let mut idx = 0;
         while idx < args.len() {
             let flag = args[idx].as_str();
-            if !matches!(flag, "-C" | "--secret" | "--env" | "--secretfile") {
+            if !matches!(flag, "-C" | "--secret" | "--env-file" | "--secret-file") {
                 break;
             }
             let Some(arg) = args.get(idx + 1) else {
@@ -104,7 +104,7 @@ fn main() {
         && (discovery::is_reserved(name) || name.starts_with('-'))
     {
         die(&format!(
-            "--secret / --env / --secretfile は <コマンド> の実行時にだけ使えます\n{USAGE_FLAGS}"
+            "--secret / --env-file / --secret-file は <コマンド> の実行時にだけ使えます\n{USAGE_FLAGS}"
         ));
     }
 

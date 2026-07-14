@@ -309,7 +309,7 @@ DB_USER = vault://secret/data/db/user
         &[
             "--secret",
             "DB_PASS=vault://secret/data/db/password",
-            "--env",
+            "--env-file",
             "mig.env",
             "secrets",
             "--check",
@@ -507,7 +507,7 @@ fn ログイン済みならloginを叩かない() {
     );
 }
 
-// ---- 明示的な受け渡し(SPEC §10.7): --secret / --env / --secretfile ----
+// ---- 明示的な受け渡し(SPEC §10.2): --secret / --env-file / --secret-file ----
 
 #[test]
 fn secretフラグは展開して環境変数で渡す() {
@@ -562,7 +562,7 @@ fn envフラグはファイルの値を値全体規則で展開して渡す() {
 
     let out = sb.haj(
         &cp,
-        &["--env", "mig.env", "show"],
+        &["--env-file", "mig.env", "show"],
         &[("HAJ_VAULT_CMD", vault.to_str().unwrap())],
     );
     assert!(out.status.success(), "stderr: {}", stderr(&out));
@@ -577,7 +577,13 @@ fn secretフラグはenvフラグより後に書けば勝つ() {
 
     let out = sb.haj(
         &cp,
-        &["--env", "a.env", "--secret", "HAJ_T_VALUE=あとの値", "show"],
+        &[
+            "--env-file",
+            "a.env",
+            "--secret",
+            "HAJ_T_VALUE=あとの値",
+            "show",
+        ],
         &[],
     );
     assert!(out.status.success(), "stderr: {}", stderr(&out));
@@ -585,7 +591,7 @@ fn secretフラグはenvフラグより後に書けば勝つ() {
 }
 
 #[test]
-fn secretfileはテンプレートを描画して0600で書く() {
+fn secret_fileはテンプレートを描画して0600で書く() {
     let sb = Sandbox::new("flag-file");
     let cp = sb.mark_command();
     let vault = sb.fake_vault();
@@ -597,7 +603,7 @@ fn secretfileはテンプレートを描画して0600で書く() {
 
     let out = sb.haj(
         &cp,
-        &["--secretfile", "config.ini=config.ini.tpl", "mark"],
+        &["--secret-file", "config.ini=config.ini.tpl", "mark"],
         &[
             ("HAJ_VAULT_CMD", vault.to_str().unwrap()),
             ("HAJ_OP_CMD", op.to_str().unwrap()),
@@ -617,7 +623,7 @@ fn secretfileはテンプレートを描画して0600で書く() {
 }
 
 #[test]
-fn secretfileの解決に失敗したら書かずに止まる() {
+fn secret_fileの解決に失敗したら書かずに止まる() {
     let sb = Sandbox::new("flag-file-fail");
     let cp = sb.mark_command();
     let vault = sb.exe("bin/vault", "#!/bin/sh\nexit 1\n");
@@ -628,7 +634,7 @@ fn secretfileの解決に失敗したら書かずに止まる() {
 
     let out = sb.haj(
         &cp,
-        &["--secretfile", "out.ini=bad.tpl", "mark"],
+        &["--secret-file", "out.ini=bad.tpl", "mark"],
         &[
             ("HAJ_VAULT_CMD", vault.to_str().unwrap()),
             ("HAJ_VAULT_LOGIN", "off"),
@@ -1011,4 +1017,79 @@ fn selfupgradeはgithub形式のjsonも読める() {
         "stdout: {}",
         stdout(&out)
     );
+}
+
+#[test]
+fn secret_fileは参照の値をファイルに書きパスを環境変数に入れる() {
+    let sb = Sandbox::new("sf-ref");
+    let vault = sb.fake_vault();
+    // $KEY にパスが入り、その中身が値になっていることを確認するコマンド
+    sb.exe(
+        "sys/commands/readkey",
+        "#!/bin/sh\ncase \"$1\" in --haj-*) exit 0 ;; esac\nprintf 'path=%s content=%s\\n' \"$KEY\" \"$(cat \"$KEY\")\"\n",
+    );
+    let cp = sb.dir.join("sys/commands");
+    let runtime = sb.dir.join("run");
+    fs::create_dir_all(&runtime).unwrap();
+
+    let out = sb.haj(
+        cp.to_str().unwrap(),
+        &[
+            "--secret-file",
+            "KEY=vault://secret/data/ssh/id_rsa",
+            "readkey",
+        ],
+        &[
+            ("HAJ_VAULT_CMD", vault.to_str().unwrap()),
+            ("XDG_RUNTIME_DIR", runtime.to_str().unwrap()),
+        ],
+    );
+    assert!(out.status.success(), "stderr: {}", stderr(&out));
+    let s = stdout(&out);
+    assert!(
+        s.contains("content=s3cr3t"),
+        "値がファイルに入っていない:\n{s}"
+    );
+    assert!(
+        s.contains(&format!("path={}", runtime.display())),
+        "一時ファイルが XDG_RUNTIME_DIR に作られていない:\n{s}"
+    );
+    // cwd には書かれない(リポジトリ汚染の防止)
+    assert!(!sb.dir.join("KEY").exists(), "cwd に書かれた");
+}
+
+#[test]
+fn secret_fileはパス指定ならそこに0600で書く() {
+    let sb = Sandbox::new("sf-path");
+    let vault = sb.fake_vault();
+    let cp = sb.mark_command();
+    let target = sb.dir.join("creds/id_rsa");
+
+    let out = sb.haj(
+        &cp,
+        &[
+            "--secret-file",
+            &format!("{}=vault://secret/data/ssh/id_rsa", target.display()),
+            "mark",
+        ],
+        &[("HAJ_VAULT_CMD", vault.to_str().unwrap())],
+    );
+    // 親ディレクトリが無いので失敗する(半端なファイルを残さない)
+    assert_eq!(out.status.code(), Some(1));
+
+    // 親を作れば書ける
+    fs::create_dir_all(sb.dir.join("creds")).unwrap();
+    let out = sb.haj(
+        &cp,
+        &[
+            "--secret-file",
+            &format!("{}=vault://secret/data/ssh/id_rsa", target.display()),
+            "mark",
+        ],
+        &[("HAJ_VAULT_CMD", vault.to_str().unwrap())],
+    );
+    assert!(out.status.success(), "stderr: {}", stderr(&out));
+    assert_eq!(fs::read_to_string(&target).unwrap(), "s3cr3t");
+    let mode = fs::metadata(&target).unwrap().permissions().mode();
+    assert_eq!(mode & 0o777, 0o600, "mode が 0600 ではない: {mode:o}");
 }

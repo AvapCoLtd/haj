@@ -115,10 +115,11 @@ haj --secret DB_PASS=vault://secret/data/db/password mig up
 # コマンド側は $DB_PASS を読むだけ。bao の存在を知らなくてよい
 ```
 
-- 渡し方は `--secret` / `--env` / `--secretfile`(いずれもコマンド名の前に書く)。
+- 渡し方は `--secret` / `--env-file` / `--secret-file`(いずれもコマンド名の前に書く)。
   haj は環境を勝手に走査しない — **人が明示的に渡したものだけ**が展開される
 - 解決に失敗するとコマンドは**実行されない**(fail-fast)。未解決の参照文字列が渡ってくる心配はしなくてよい
-- 設定ファイルが要るツールには `--secretfile 出力=テンプレート.tpl` で描画して渡せる
+- ファイルで渡せと要求するツール(ssh の鍵、kubeconfig など)には `--secret-file`。
+  `--secret-file KEY=vault://...` なら一時ファイルに書かれ、パスが `$KEY` に入る
 
 ## 6. デバッグ
 

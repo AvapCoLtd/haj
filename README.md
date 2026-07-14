@@ -113,9 +113,9 @@ haj --version
 
 ```
 -C <ディレクトリ>                 そのディレクトリを起点に実行する (git と同じ)
---secret <名前>=<値>             シークレット参照を展開して環境変数で渡す
---env <ファイル>                  key = value を読み、値を展開して渡す
---secretfile <出力>=<テンプレート>  テンプレートを描画して 0600 で書いてから実行
+--secret <名前>=<値>                       参照を展開して環境変数で渡す
+--env-file <ファイル>                       key = value を読み、値を展開して渡す
+--secret-file <名前|パス>=<参照|テンプレート>  値をファイルに書く (名前ならパスを環境変数へ)
 ```
 
 組み込みコマンドは**どこにいても使える**ので、一覧にも TAB 補完にも常に出ます
@@ -357,8 +357,8 @@ $ haj config
 
 ```sh
 haj --secret DB_PASS=vault://secret/data/db/password mig up
-haj --env ./mig.env mig up                          # key = value のファイルから
-haj --secretfile config.ini=config.ini.tpl app run  # テンプレートを 0600 で描画
+haj --env-file ./mig.env mig up                     # key = value のファイルから
+haj --secret-file KEY=vault://secret/data/ssh/id_rsa sh 'ssh -i "$KEY" host'  # ファイルで渡す
 ```
 
 **渡すものと相手は、人がその実行時に明示する。** haj が環境変数を勝手に走査して
@@ -368,11 +368,11 @@ haj --secretfile config.ini=config.ini.tpl app run  # テンプレートを 0600
 何が渡るのかは、**金庫に触らずに**確認できる:
 
 ```console
-$ haj --secret DB_PASS=vault://secret/data/db/password --env ./mig.env secrets --check
+$ haj --secret DB_PASS=vault://secret/data/db/password --env-file ./mig.env secrets --check
  実行時に渡るもの (値は解決していません):
    --secret    DB_PASS               → vault://secret/data/db/password
-   --env       DB_HOST                 db.internal
-   --env       DB_USER               → vault://secret/data/db/user
+   --env-file  DB_HOST                 db.internal
+   --env-file  DB_USER               → vault://secret/data/db/user
 ```
 
 書式は発明していない — 1Password は `op inject`、Vault は vault-agent template の
