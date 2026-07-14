@@ -775,3 +775,45 @@ fn execの引数なしは使い方エラー() {
     assert_eq!(out.status.code(), Some(1));
     assert!(stderr(&out).contains("使い方"), "stderr: {}", stderr(&out));
 }
+
+// ---- haj sh(SPEC §9.2): exec sh -c の省略形 ----
+
+#[test]
+fn shはシェルの1行に注入して実行する() {
+    let sb = Sandbox::new("sh");
+    let cp = sb.show_command();
+    let vault = sb.fake_vault();
+
+    let out = sb.haj(
+        &cp,
+        &[
+            "--secret",
+            "HAJ_T_VALUE=vault://avap/data/hoge/fuga",
+            "sh",
+            "printf '%s' \"$HAJ_T_VALUE\"",
+        ],
+        &[("HAJ_VAULT_CMD", vault.to_str().unwrap())],
+    );
+    assert!(out.status.success(), "stderr: {}", stderr(&out));
+    assert_eq!(stdout(&out), "s3cr3t");
+}
+
+#[test]
+fn shの追加引数は位置パラメータになる() {
+    let sb = Sandbox::new("sh-args");
+    let cp = sb.show_command();
+
+    let out = sb.haj(&cp, &["sh", "printf '%s' \"$1-$2\"", "one", "two"], &[]);
+    assert!(out.status.success(), "stderr: {}", stderr(&out));
+    assert_eq!(stdout(&out), "one-two");
+}
+
+#[test]
+fn shの引数なしは使い方エラー() {
+    let sb = Sandbox::new("sh-usage");
+    let cp = sb.show_command();
+
+    let out = sb.haj(&cp, &["sh"], &[]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(stderr(&out).contains("使い方"), "stderr: {}", stderr(&out));
+}

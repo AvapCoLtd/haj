@@ -125,10 +125,10 @@ root = true
 - 空文字列
 - `.` または `-` で始まるもの
 - `/` を含むもの
-- **予約語**: `help`, `commands`, `which`, `config`, `exec`, `selfupgrade`, `secrets`, `__complete`
+- **予約語**: `help`, `commands`, `which`, `config`, `exec`, `sh`, `selfupgrade`, `secrets`, `__complete`
 
 予約語を弾くのは、`.haj/commands/help` を置かれるとコアのヘルプが奪われ、
-「コマンド一覧を出す手段が無くなる」状態に陥りうるため。`exec` はさらに強い理由で
+「コマンド一覧を出す手段が無くなる」状態に陥りうるため。`exec` / `sh` はさらに強い理由で
 奪われてはならない — 置き換えられると**展開済みシークレットを横取りする最短経路**になる(§9.2)。
 
 ---
@@ -398,6 +398,7 @@ hook_timeout_ms = 2000
 | `haj selfupgrade` | コア自身の更新(§9.1) |
 | `haj secrets` | シークレット参照の展開対象を確認する(§10.6) |
 | `haj exec <プログラム> [引数...]` | PATH のコマンドにシークレットを注入して実行(§9.2) |
+| `haj sh '<コマンド>' [引数...]` | `exec sh -c` の省略形(§9.2) |
 | `haj --version` | コアの版 |
 | `haj __complete ...` | 補完プロトコル(人間向けではない) |
 
@@ -421,6 +422,7 @@ hook_timeout_ms = 2000
    selfupgrade  haj自身を更新する
    secrets      シークレット参照の展開対象を確認する (dry-run)
    exec         PATHのコマンドにシークレットを注入して実行する
+   sh           シェルの1行をシークレットを注入して実行する (exec sh -c の省略形)
 ```
 
 `haj commands` では出自ラベル `[haj]`、パスの代わりに `(組み込み)` を出す。
@@ -481,14 +483,22 @@ haj --secret DB_HOST=vault://avap/data/db/host exec sh -c 'mysql -h $DB_HOST'
 
 - 展開の規則(§10)はサブコマンド実行と完全に同じ。受け渡しフラグ(§10.7)も
   ambient な走査(`HAJ_SECRETS=1`)も同様に乗る
-- **シェルの変数展開が要るなら、明示的に `sh -c` を書く。** コアは文字列をシェルに
-  包まない(§11 — コアは引数を解釈しない)。`$VAR` を使わないなら
+- **シェルの変数展開が要るなら、明示的に `sh -c` を書くか、省略形 `haj sh` を使う。**
+  コアは文字列をシェルに包まない(§11 — コアは引数を解釈しない)。`$VAR` を使わないなら
   `haj exec mysql -h db.example` のようにそのまま並べればよい
 - `HAJ_ROOT` / `HAJ_NAME` / `HAJ_PROJECT` / `HAJ_PROJECT_DIR` は**渡さない**(明示的に
   削除する)。haj の外の世界のコマンドに、haj の顔をさせない
 - 見つからなければ `127`、exec に失敗したら `126`(§3.2 と同じ)
 - `exec` は予約語(§2.6)。`.haj/commands/exec` で置き換えられると、`--secret` で
   展開したシークレットを横取りする最短経路になるため、**探索より常に優先**する
+
+**`haj sh '<コマンド>' [引数...]`** は `haj exec sh -c '<コマンド>' ...` の省略形。
+追加の引数はシェルの位置パラメータ(`$1` から)として渡る。`sh` も同じ理由で予約語。
+
+```sh
+haj --secret MYSQL_HOST=vault://avap/data/db/host sh 'mysql -h $MYSQL_HOST'
+haj sh 'echo $1-$2' one two    # → one-two
+```
 
 ---
 

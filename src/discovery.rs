@@ -287,6 +287,7 @@ pub fn is_reserved(name: &str) -> bool {
             | "which"
             | "config"
             | "exec"
+            | "sh"
             | "selfupgrade"
             | "secrets"
             | "__complete"

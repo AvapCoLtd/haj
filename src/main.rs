@@ -63,9 +63,9 @@ fn main() {
     };
 
     // 受け渡しフラグは「本体を実行する」ときにだけ意味がある。
-    // exec 以外の組み込みに続けて書かれたら使い方の誤り(SPEC §10.7)。
+    // exec / sh 以外の組み込みに続けて書かれたら使い方の誤り(SPEC §10.7)。
     if !deliveries.is_empty()
-        && name != "exec"
+        && !matches!(name, "exec" | "sh")
         && (discovery::is_reserved(name) || name.starts_with('-'))
     {
         die(&format!(
@@ -76,6 +76,8 @@ fn main() {
     match name {
         // 探索を通さず、PATH のコマンドに注入だけして実行する。SPEC §9.2。
         "exec" => exec_external(rest, &deliveries),
+        // exec sh -c の省略形。シェルの変数展開($VAR)を1語で使えるように。
+        "sh" => exec_shell(rest, &deliveries),
         "-h" | "--help" | "help" => {
             print_help(rest.first().map(String::as_str));
             std::process::exit(0);
@@ -239,13 +241,27 @@ fn prepare_proc(path: &std::path::Path, args: &[String], deliveries: &[secrets::
 /// `haj exec <プログラム> [引数...]`(SPEC §9.2)。
 ///
 /// 探索を通さず、PATH のコマンド(`/` を含めばそのパス)に**シークレットの注入だけ
-/// して**実行する。op run / doppler run が占めている場所。シェルの変数展開が要るなら
-/// 明示的に `sh -c` を書く(コアは文字列をシェルに包まない — SPEC §11)。
+/// して**実行する。op run / doppler run が占めている場所。
 fn exec_external(args: &[String], deliveries: &[secrets::Delivery]) -> ! {
     let Some((prog, prog_args)) = args.split_first() else {
         die("使い方: haj exec <プログラム> [引数...]");
     };
+    exec_program(prog, prog_args.to_vec(), deliveries)
+}
 
+/// `haj sh '<コマンド>' [引数...]`(SPEC §9.2)— `haj exec sh -c` の省略形。
+/// 追加の引数はシェルの位置パラメータ($1...)として渡る。
+fn exec_shell(args: &[String], deliveries: &[secrets::Delivery]) -> ! {
+    let Some((script, rest)) = args.split_first() else {
+        die("使い方: haj sh '<コマンド>' [引数...]");
+    };
+    // sh -c <script> の直後の引数は $0。$1 から始めたいので埋める。
+    let mut argv = vec!["-c".to_string(), script.clone(), "haj".to_string()];
+    argv.extend(rest.iter().cloned());
+    exec_program("sh", argv, deliveries)
+}
+
+fn exec_program(prog: &str, args: Vec<String>, deliveries: &[secrets::Delivery]) -> ! {
     let path = if prog.contains('/') {
         std::path::PathBuf::from(prog)
     } else {
@@ -258,7 +274,7 @@ fn exec_external(args: &[String], deliveries: &[secrets::Delivery]) -> ! {
         }
     };
 
-    let mut proc = prepare_proc(&path, prog_args, deliveries);
+    let mut proc = prepare_proc(&path, &args, deliveries);
 
     // haj の外の世界のコマンドに、haj の顔をさせない。
     proc.env_remove("HAJ_ROOT")
