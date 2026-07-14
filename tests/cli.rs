@@ -905,7 +905,7 @@ fn helpにグローバルフラグの一覧が出る() {
     let out = sb.haj(&sb.dir, cp.to_str().unwrap(), &["help"]);
     let s = stdout(&out);
     assert!(s.contains("グローバルフラグ"), "節が無い:\n{s}");
-    for f in ["-C ", "--secret ", "--env ", "--secretfile "] {
+    for f in ["-C ", "--secret ", "--env-file ", "--secret-file "] {
         assert!(s.contains(f), "{f} がヘルプに無い:\n{s}");
     }
 }
@@ -1050,6 +1050,81 @@ fn whichとhelpと補完にエイリアスの素性が出る() {
 
     let comp = stdout(&haj_with_config(&sb, &sb.dir, &["__complete"]));
     assert!(comp.contains("ie\t"), "補完に出ない:\n{comp}");
+}
+
+#[test]
+fn プロジェクトのhaj_projectにエイリアスを書ける() {
+    let sb = Sandbox::new("alias-proj");
+    sb.command(
+        "proj/.haj",
+        "deploy",
+        &conforming("デプロイ", "", "", "echo DEPLOYED $1"),
+    );
+    sb.write(
+        "proj/.haj/project",
+        "name = myapp\nalias.t = deploy v9\nalias.t.desc = テストを流す\n",
+    );
+
+    // プロジェクトの中では効く(残りの引数は後ろに繋がらない形で固定値を検証)
+    let out = haj_with_config(&sb, &sb.path("proj"), &["t"]);
+    assert!(
+        out.status.success(),
+        "プロジェクト・エイリアスで実行できない"
+    );
+    assert_eq!(stdout(&out).trim(), "DEPLOYED v9");
+
+    // help に .desc と出自(プロジェクト名)が出る
+    let help = stdout(&haj_with_config(&sb, &sb.path("proj"), &["help"]));
+    assert!(help.contains("テストを流す"), "descが出ない:\n{help}");
+    assert!(help.contains("[myapp]"), "出自が出ない:\n{help}");
+
+    // which も展開と出自を見せる
+    let which = stdout(&haj_with_config(&sb, &sb.path("proj"), &["which", "t"]));
+    assert!(
+        which.contains("alias.t = deploy v9"),
+        "whichが展開を見せない:\n{which}"
+    );
+    assert!(which.contains("[myapp]"), "whichが出自を見せない:\n{which}");
+
+    // 補完にも出る
+    let comp = stdout(&haj_with_config(&sb, &sb.path("proj"), &["__complete"]));
+    assert!(comp.contains("t\tテストを流す"), "補完に出ない:\n{comp}");
+
+    // プロジェクトの外では存在しない
+    let out = haj_with_config(&sb, &sb.dir, &["t"]);
+    assert!(!out.status.success(), "プロジェクトの外で効いてしまう");
+}
+
+#[test]
+fn プロジェクトのエイリアスはユーザー設定より勝つ() {
+    let sb = Sandbox::new("alias-scope");
+    sb.write("xdgconf/haj/config", "alias.t = deploy GLOBAL\n");
+    sb.command(
+        "proj/.haj",
+        "deploy",
+        &conforming("デプロイ", "", "", "echo DEPLOYED $1"),
+    );
+    sb.write("proj/.haj/project", "alias.t = deploy PROJECT\n");
+
+    let out = haj_with_config(&sb, &sb.path("proj"), &["t"]);
+    assert_eq!(
+        stdout(&out).trim(),
+        "DEPLOYED PROJECT",
+        "近いスコープが勝っていない"
+    );
+}
+
+#[test]
+fn プロジェクトエイリアスでも予約語は奪えない() {
+    let sb = Sandbox::new("alias-proj-reserved");
+    sb.write("proj/.haj/project", "alias.help = sh 'echo HIJACKED'\n");
+    std::fs::create_dir_all(sb.path("proj/.haj")).unwrap();
+
+    let out = haj_with_config(&sb, &sb.path("proj"), &["help"]);
+    assert!(out.status.success());
+    let s = stdout(&out);
+    assert!(!s.contains("HIJACKED"), "helpが奪われた:\n{s}");
+    assert!(s.contains("haj自身"), "普通のhelpが出ていない:\n{s}");
 }
 
 #[test]

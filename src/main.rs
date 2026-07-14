@@ -6,6 +6,7 @@
 //!
 //! 仕様は SPEC.md を参照。
 
+mod aliases;
 mod builtin;
 mod cache;
 mod completion;
@@ -79,12 +80,13 @@ fn main() {
             }
             Some((n, r)) => {
                 // 優先順位は git と同じ: 予約語(組み込み) > エイリアス > 探索。
-                // 定義はユーザー設定だけから読む(config::Config::alias 参照)。
+                // 定義はプロジェクトの .haj/project とユーザー設定から(aliases 参照)。
+                // 直前までに -C を適用済みなので、移動先のプロジェクトの定義が見える。
                 if !alias_expanded && !n.starts_with('-') && !discovery::is_reserved(n) {
-                    if let Some(exp) = config::Config::load().alias(n) {
+                    if let Some(a) = aliases::lookup(n) {
                         alias_expanded = true;
                         let mut expanded: Vec<String> =
-                            exp.split_whitespace().map(str::to_string).collect();
+                            a.expansion.split_whitespace().map(str::to_string).collect();
                         expanded.extend(r.iter().cloned());
                         args = expanded;
                         continue; // フラグから解釈し直す
@@ -373,14 +375,14 @@ fn which(args: &[String]) -> ! {
         std::process::exit(1);
     };
 
-    // エイリアスなら展開を見せる(素性の可視化。エイリアスは探索より優先)
-    let alias = config::Config::load().alias(target);
-    if let Some(exp) = &alias {
+    // エイリアスなら展開と出自を見せる(素性の可視化。エイリアスは探索より優先)
+    let alias = aliases::lookup(target);
+    if let Some(a) = &alias {
         if !all {
-            println!("alias.{target} = {exp}");
+            println!("alias.{target} = {}  {}", a.expansion, a.origin.label());
             std::process::exit(0);
         }
-        println!("* alias.{target} = {exp}");
+        println!("* alias.{target} = {}  {}", a.expansion, a.origin.label());
     }
 
     let cands = discovery::candidates(target);
@@ -490,13 +492,25 @@ fn print_help(topic: Option<&str>) {
     }
 
     // エイリアス(SPEC §2.7)。呼べる名前である以上、一覧から漏らさない。
-    let cfg = config::Config::load();
-    let aliases = cfg.aliases();
+    // 出自(プロジェクト / 設定ファイル)も右端に出す — コマンドの表と同じ規律。
+    let aliases = aliases::list();
     if !aliases.is_empty() {
-        println!("\n エイリアス (~/.config/haj/config の alias.*):");
-        let awidth = aliases.iter().map(|(n, _)| n.len()).max().unwrap_or(0);
-        for (n, v) in &aliases {
-            println!("   {n:awidth$}  {}", alias_summary(&cfg, n, v));
+        println!("\n エイリアス (設定ファイルまたは .haj/project の alias.*):");
+        let awidth = aliases.iter().map(|a| a.name.len()).max().unwrap_or(0);
+        let dwidth = aliases
+            .iter()
+            .map(|a| a.summary().chars().count())
+            .max()
+            .unwrap_or(0);
+        for a in &aliases {
+            println!(
+                "   {:awidth$}  {:dwidth$}  {}",
+                a.name,
+                a.summary(),
+                a.origin.label(),
+                awidth = awidth,
+                dwidth = dwidth,
+            );
         }
     }
 
@@ -505,10 +519,8 @@ fn print_help(topic: Option<&str>) {
     println!("\n グローバルフラグ (コマンド名の前に書く):");
     println!("   -C <ディレクトリ>                   そのディレクトリを起点に実行する (gitと同じ。複数可)");
     println!("   --secret <名前>=<値>              参照を展開して環境変数で渡す");
-    println!("   --env <ファイル>                   key = value を読み、値を展開して渡す");
-    println!(
-        "   --secretfile <出力>=<テンプレート>   テンプレートを描画して 0600 で書いてから実行"
-    );
+    println!("   --env-file <ファイル>              key = value を読み、値を展開して渡す");
+    println!("   --secret-file <名前|パス>=<参照|テンプレート>  中身をファイルにして渡す (0600)");
     println!("   (シークレット参照の詳細は haj help secrets)");
 
     if let Some(footer) = contract::fragment("footer") {
@@ -558,22 +570,6 @@ fn dirs_hint() -> String {
     }
 }
 
-/// 一覧・補完に出すエイリアスの説明。`alias.<名前>.desc` があればそれ、
-/// 無ければ展開そのもの(長いものは切り詰める。読めないより短い方がまし)。
-fn alias_summary(cfg: &config::Config, name: &str, expansion: &str) -> String {
-    if let Some(d) = cfg.alias_desc(name) {
-        return d;
-    }
-    const MAX: usize = 48;
-    let one_line: String = expansion.split_whitespace().collect::<Vec<_>>().join(" ");
-    if one_line.chars().count() <= MAX {
-        format!("→ haj {one_line}")
-    } else {
-        let short: String = one_line.chars().take(MAX).collect();
-        format!("→ haj {short}…")
-    }
-}
-
 /// 補完プロトコル(シェル補完スクリプトから呼ばれる)。
 ///
 ///   haj __complete                  → "名前\t説明" を列挙
@@ -589,9 +585,9 @@ fn complete(args: &[String]) {
 
     // エイリアスなら展開して、実効コマンドの補完に回す(SPEC §6)。
     // 展開しないと `haj oci <TAB>` のようなエイリアスで補完が死ぬ。
-    let (name, words): (String, Vec<String>) = match config::Config::load().alias(name) {
-        Some(exp) => {
-            let argv: Vec<String> = exp.split_whitespace().map(str::to_string).collect();
+    let (name, words): (String, Vec<String>) = match aliases::lookup(name) {
+        Some(a) => {
+            let argv: Vec<String> = a.expansion.split_whitespace().map(str::to_string).collect();
             let mut i = 0;
             while i < argv.len() {
                 match argv[i].as_str() {
@@ -654,36 +650,28 @@ fn complete(args: &[String]) {
 
 /// 打てる名前を全部出す(探索で見つかるもの + 組み込み + エイリアス)。
 fn complete_names() {
-    {
-        let mut cache = DescribeCache::load();
-        let mut rows: Vec<(String, String)> = discovery::list()
-            .into_iter()
-            .map(|cmd| {
-                let d = describe(&mut cache, &cmd).unwrap_or_default();
-                (cmd.name, d)
-            })
-            .collect();
-        cache.save();
-        // 組み込みも補完に出す。どこにいても打てるのだから、TABで出ないのはおかしい。
-        rows.extend(
-            builtin::ALL
-                .iter()
-                .map(|b| (b.name.to_string(), b.describe.to_string())),
-        );
-        // エイリアスも呼べる名前(SPEC §2.7)
-        let cfg = config::Config::load();
-        rows.extend(
-            cfg.aliases()
-                .into_iter()
-                .map(|(n, v)| {
-                    let d = alias_summary(&cfg, &n, &v);
-                    (n, d)
-                })
-                .collect::<Vec<_>>(),
-        );
-        rows.sort();
-        for (name, desc) in rows {
-            println!("{name}\t{desc}");
-        }
+    let mut cache = DescribeCache::load();
+    let mut rows: Vec<(String, String)> = discovery::list()
+        .into_iter()
+        .map(|cmd| {
+            let d = describe(&mut cache, &cmd).unwrap_or_default();
+            (cmd.name, d)
+        })
+        .collect();
+    cache.save();
+    // 組み込みも補完に出す。どこにいても打てるのだから、TABで出ないのはおかしい。
+    rows.extend(
+        builtin::ALL
+            .iter()
+            .map(|b| (b.name.to_string(), b.describe.to_string())),
+    );
+    // エイリアスも呼べる名前(SPEC §2.7)
+    rows.extend(aliases::list().into_iter().map(|a| {
+        let d = a.summary();
+        (a.name, d)
+    }));
+    rows.sort();
+    for (name, desc) in rows {
+        println!("{name}\t{desc}");
     }
 }

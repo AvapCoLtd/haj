@@ -133,25 +133,39 @@ root = true
 
 ### 2.7 エイリアス(git 方式)
 
-ユーザー設定に `alias.<名前> = <語...>` と書くと、その名前が**語の並びに展開されて
-から**実行される。残りの引数は後ろに繋がる。
+`alias.<名前> = <語...>` と書くと、その名前が**語の並びに展開されてから**実行される。
+残りの引数は後ろに繋がる。定義できる場所は2つで、**近いスコープが勝つ**:
+
+1. プロジェクトの `.haj/project`(そのプロジェクトの中でだけ有効)
+2. ユーザー設定 `~/.config/haj/config`
 
 ```
-# ~/.config/haj/config
+# ~/.config/haj/config — どこでも使える個人の略記
 alias.ie = -C ~/repos/example-app
+```
+
+```
+# .haj/project — package.json の scripts に相当する「1行の委譲」
+name = myapp
+alias.test = exec docker compose exec app vendor/bin/phpunit --testdox
+alias.test.desc = テストを流す(コンテナ内)
 ```
 
 ```sh
 haj ie mig up    # → haj -C ~/repos/example-app mig up
 haj ie help      # → そのプロジェクトのコマンド一覧
+haj test         # (myapp の中で) → haj exec docker compose exec app ...
 ```
 
 - 展開は名前の位置で**1回だけ**(再帰しない)。展開結果の先頭にグローバルフラグ
-  (§3.2)があれば通常どおり解釈される
+  (§3.2)があれば通常どおり解釈される。`-C` は展開より先に適用されるので、
+  `haj -C ~/repos/myapp test` は移動先のプロジェクト・エイリアスが見える
 - 優先順位は git と同じ: **予約語(組み込み) > エイリアス > 探索**。
   `alias.help` のような予約語の名前は無視される
-- **定義を読むのはユーザー設定だけ。** `.haj/project` などリポジトリ側からは定義
-  できない — clone したリポジトリに `alias.mig = sh '...'` を仕込ませない
+- **境界規則**: 1行で書けなくなったら `.haj/commands/` に昇格する。委譲は宣言、
+  ロジックは実行ファイル(§11 — タスクランナーは作らない)
+- プロジェクト定義の露出は `.haj/commands/` と同じ(clone した中身が haj 経由で
+  走る)。エイリアス固有の防壁は設けず、ツリーの信頼ゲート(Issue #1)で扱う
 - 語の分割は空白区切り(引用符は解釈しない)
 - **説明を書ける**: `alias.<名前>.desc = <一行説明>`。`haj help` の一覧と TAB 補完に出る
   (書かなければ展開そのものが出る。長い場合は切り詰められる)
