@@ -67,9 +67,9 @@ impl Config {
         (default.to_string(), Source::Default)
     }
 
-    /// エイリアス(SPEC §2.7)。`alias.<名前> = <語...>`。
-    /// **ユーザー設定だけ**から読む — リポジトリ側(.haj/project 等)に定義させると、
-    /// clone したリポジトリが `alias.mig = sh '...'` を仕込めてしまう。
+    /// エイリアス(SPEC §2.7)の**ユーザー設定スコープ**。
+    /// プロジェクトの `.haj/project` も含めた解決は aliases::lookup が行う
+    /// (近いスコープが勝つ)。
     pub fn alias(&self, name: &str) -> Option<String> {
         self.map
             .get(&format!("alias.{name}"))

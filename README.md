@@ -130,7 +130,7 @@ haj --version
 |---|---|---|---|
 | A. プロジェクト | `<リポジトリ>/.haj/commands/<名前>` | そのリポジトリの中だけ | チームで共有する、リポジトリ固有のタスク |
 | B. グローバル | `$PATH` の `haj-<名前>` | どこでも | 個人ツール、パッケージマネージャで配るもの |
-| C. エイリアス | `~/.config/haj/config` の `alias.<名前>` | どこでも | 打鍵の短縮。既存コマンドの組み合わせ |
+| C. エイリアス | `~/.config/haj/config` または `.haj/project` の `alias.<名前>` | どこでも / そのプロジェクト | 打鍵の短縮。1行の委譲(scripts 相当) |
 
 ### A. プロジェクトのコマンド(`.haj/commands/`)
 
@@ -219,11 +219,29 @@ $ haj wm up             # → haj -C ~/repos/webapp mig up
 
 - 展開は**1回だけ**(再帰しない)。残りの引数は後ろに繋がる
 - 優先順位は **組み込み > エイリアス > 探索**(`alias.help` のような予約語は無視される)
-- 定義を読むのは**ユーザー設定だけ**。リポジトリからは定義できない
-  (clone したリポジトリに `alias.mig = sh '...'` を仕込ませないため)
-- `haj which <名前>` で展開を確認でき、`haj` の一覧にもエイリアスの節が出る
+- `haj which <名前>` で展開と出自を確認でき、`haj` の一覧にもエイリアスの節が出る
 - **補完も効く。** `haj web <TAB>` は移動先のプロジェクトのコマンドを補完し、
   `haj oci <TAB>` は `oci` 自身の補完に委譲される(`haj exec kubectl <TAB>` も同様)
+
+#### プロジェクト・エイリアス(`.haj/project` に書く)
+
+package.json の `scripts` に相当する「1行の委譲」は、リポジトリの `.haj/project` にも
+書ける。そのプロジェクトの中でだけ有効で、同名ならユーザー設定より**近い方が勝つ**。
+
+```
+# .haj/project
+name = myapp
+alias.test = exec docker compose exec app vendor/bin/phpunit --testdox
+alias.test.desc = テストを流す(コンテナ内)
+```
+
+```console
+$ cd ~/repos/myapp
+$ haj test        # → docker compose exec app vendor/bin/phpunit --testdox
+```
+
+**境界規則**: 1行で書けなくなったら `.haj/commands/` の実行ファイルに昇格する。
+委譲は宣言、ロジックはファイル(haj はタスクランナーを作らない)。
 
 ### 規約(A / B に共通)
 

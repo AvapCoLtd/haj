@@ -112,7 +112,7 @@ pub fn command_dirs() -> Vec<Dir> {
 /// 親の共通コマンドも継承したい場合)。止めないと、誰かが
 /// `~/repos/.haj/commands/setup` を置いただけで、その配下の全リポジトリに
 /// `haj setup` が生えてしまう。置いた本人以外は気づけない。
-fn project_trees() -> Vec<(PathBuf, Origin)> {
+pub fn project_trees() -> Vec<(PathBuf, Origin)> {
     let mut trees = Vec::new();
     let home = home_dir();
     if let Ok(cwd) = env::current_dir() {
