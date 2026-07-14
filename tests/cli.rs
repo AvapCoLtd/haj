@@ -735,10 +735,7 @@ fn 対象プロジェクトを環境変数で渡す() {
 
     assert_eq!(
         out.trim(),
-        format!(
-            "project=example-app dir={}",
-            sb.path("proj").display()
-        ),
+        format!("project=example-app dir={}", sb.path("proj").display()),
         "破壊的なコマンドが対象プロジェクトを名乗れない"
     );
 }

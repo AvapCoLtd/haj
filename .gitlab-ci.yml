@@ -16,6 +16,9 @@ stages:
 variables:
   # CIの中でだけ使う。開発者の ~/.cargo は汚さない。
   CARGO_HOME: $CI_PROJECT_DIR/.cargo
+  # avap ビルドプロファイル(src/profile.rs)。社内向けの既定値を焼き込む。
+  # 公開ビルド(GitHub Releases 向け)はこの変数を外して別ジョブでビルドする。
+  HAJ_BUILD_AVAP: "1"
   CARGO_TERM_COLOR: always
   TARGET: x86_64-unknown-linux-musl
 

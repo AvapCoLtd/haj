@@ -14,8 +14,10 @@ use std::process::{Command, Stdio};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
-pub const DEFAULT_GITLAB: &str = "https://gitlab.avaper.day";
-pub const DEFAULT_PROJECT_ID: &str = "788";
+/// 公開プロファイルでは空 = 取得元が設定されるまで selfupgrade は動かない
+/// (GitHub Releases 対応は #10 フェーズ3)。
+pub const DEFAULT_GITLAB: &str = crate::profile::pick("https://gitlab.avaper.day", "");
+pub const DEFAULT_PROJECT_ID: &str = crate::profile::pick("788", "");
 pub const DEFAULT_TARGET: &str = "x86_64-unknown-linux-musl";
 
 struct Config {
