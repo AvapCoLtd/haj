@@ -340,6 +340,170 @@ fn shebangのインタプリタが無いときは原因を教える() {
     );
 }
 
+// --- プロジェクト境界と素性 --------------------------------------------------
+//
+// 探索を素朴に / まで遡って全部積むと、上流の野良 .haj が黙って効いてしまい、
+// しかも「どのプロジェクトの setup が走ったのか」が分からない。
+// setup/reset は破壊的なので、これは事故になる。
+
+#[test]
+fn 上流の野良hajは境界で遮られる() {
+    let sb = Sandbox::new("boundary");
+    // 誰かが上流(リポジトリの親)に置いてしまった setup
+    sb.command(
+        "upstream/.haj",
+        "setup",
+        &conforming("野良setup", "", "", "echo LEAKED"),
+    );
+    // 自分のプロジェクト。.haj があるのでここが境界になる
+    sb.command(
+        "upstream/myproj/.haj",
+        "build",
+        &conforming("自分のbuild", "", "", "true"),
+    );
+
+    let cp = sb.path("none");
+    let out = stdout(&sb.haj(
+        &sb.path("upstream/myproj"),
+        cp.to_str().unwrap(),
+        &["__complete"],
+    ));
+
+    assert!(out.contains("build"), "自分のコマンドが見えない:\n{out}");
+    assert!(
+        !out.contains("setup"),
+        "上流の野良setupが境界を越えて漏れている:\n{out}"
+    );
+}
+
+#[test]
+fn root_falseなら親の共通コマンドも継承する() {
+    let sb = Sandbox::new("monorepo");
+    // モノレポのルート。共通コマンド mig を持つ
+    sb.command("mono/.haj", "mig", &conforming("共通のmig", "", "", "true"));
+    // サブプロジェクト。root = false と宣言して親も見に行く
+    sb.command(
+        "mono/web/.haj",
+        "setup",
+        &conforming("webのsetup", "", "", "true"),
+    );
+    sb.write("mono/web/.haj/project", "name = web\nroot = false\n");
+
+    let cp = sb.path("none");
+    let out = stdout(&sb.haj(&sb.path("mono/web"), cp.to_str().unwrap(), &["__complete"]));
+
+    assert!(out.contains("setup"), "自分のsetupが無い:\n{out}");
+    assert!(
+        out.contains("mig"),
+        "root=falseなのに親のmigを継承していない:\n{out}"
+    );
+}
+
+#[test]
+fn どのプロジェクトのコマンドかを一覧に出す() {
+    let sb = Sandbox::new("origin");
+    sb.command(
+        "sys",
+        "bao-login",
+        &conforming("Vaultログイン", "", "", "true"),
+    );
+    sb.command(
+        "proj/.haj",
+        "setup",
+        &conforming("セットアップ", "", "", "true"),
+    );
+    sb.write("proj/.haj/project", "name = example-app\n");
+
+    let cp = sb.path("sys/commands");
+    let out = stdout(&sb.haj(&sb.path("proj"), cp.to_str().unwrap(), &["help"]));
+
+    assert!(
+        out.contains("プロジェクト: example-app"),
+        "いまどのプロジェクトにいるのかを言っていない:\n{out}"
+    );
+    assert!(
+        out.contains("[example-app]"),
+        "setupの出自が出ていない:\n{out}"
+    );
+    assert!(
+        out.contains("[共通]"),
+        "共通コマンドの出自が出ていない:\n{out}"
+    );
+}
+
+#[test]
+fn プロジェクト名は既定でディレクトリ名になる() {
+    let sb = Sandbox::new("defaultname");
+    sb.command(
+        "myrepo/.haj",
+        "setup",
+        &conforming("セットアップ", "", "", "true"),
+    );
+    // .haj/project を置いていない
+
+    let cp = sb.path("none");
+    let out = stdout(&sb.haj(&sb.path("myrepo"), cp.to_str().unwrap(), &["help"]));
+
+    assert!(
+        out.contains("プロジェクト: myrepo"),
+        "ディレクトリ名がプロジェクト名にならない:\n{out}"
+    );
+}
+
+#[test]
+fn 対象プロジェクトを環境変数で渡す() {
+    let sb = Sandbox::new("projenv");
+    sb.command(
+        "proj/.haj",
+        "setup",
+        "#!/bin/sh\necho \"project=$HAJ_PROJECT dir=$HAJ_PROJECT_DIR\"\n",
+    );
+    sb.write("proj/.haj/project", "name = example-app\n");
+
+    let cp = sb.path("none");
+    let out = stdout(&sb.haj(&sb.path("proj"), cp.to_str().unwrap(), &["setup"]));
+
+    assert_eq!(
+        out.trim(),
+        format!(
+            "project=example-app dir={}",
+            sb.path("proj").display()
+        ),
+        "破壊的なコマンドが対象プロジェクトを名乗れない"
+    );
+}
+
+#[test]
+fn which_allで隠れている定義まで見える() {
+    let sb = Sandbox::new("whichall");
+    sb.command("sys", "setup", &conforming("共通のsetup", "", "", "true"));
+    sb.command(
+        "proj/.haj",
+        "setup",
+        &conforming("固有のsetup", "", "", "true"),
+    );
+    sb.write("proj/.haj/project", "name = myproj\n");
+
+    let cp = sb.path("sys/commands");
+    let out = stdout(&sb.haj(
+        &sb.path("proj"),
+        cp.to_str().unwrap(),
+        &["which", "--all", "setup"],
+    ));
+
+    let lines: Vec<&str> = out.lines().filter(|l| l.contains("setup")).collect();
+    assert_eq!(lines.len(), 2, "候補が2つ出るべき:\n{out}");
+    assert!(lines[0].starts_with('*'), "勝っている方に印が無い:\n{out}");
+    assert!(
+        lines[0].contains("[myproj]"),
+        "勝つのはプロジェクト側:\n{out}"
+    );
+    assert!(
+        lines[1].contains("[共通]"),
+        "隠れている方が見えない:\n{out}"
+    );
+}
+
 #[test]
 fn 実行ビットが無いファイルはコマンドとして扱わない() {
     let sb = Sandbox::new("noexec");

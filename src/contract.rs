@@ -115,7 +115,9 @@ pub fn complete(cmd: &Command, words: &[String]) -> Vec<String> {
 /// (URL、環境変数の上書き方法、ファイルの置き場所など)。
 pub fn fragment(kind: &str) -> Option<String> {
     for dir in crate::discovery::command_dirs() {
-        let Some(root) = dir.parent() else { continue };
+        let Some(root) = dir.path.parent() else {
+            continue;
+        };
         let f = root.join(format!("help.{kind}"));
         if let Ok(s) = std::fs::read_to_string(&f) {
             return Some(s);

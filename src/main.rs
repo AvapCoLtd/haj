@@ -9,6 +9,8 @@
 mod cache;
 mod contract;
 mod discovery;
+mod project;
+mod selfupgrade;
 
 use std::io::Write;
 use std::os::unix::process::CommandExt;
@@ -39,6 +41,7 @@ fn main() {
             println!("haj {VERSION}");
             std::process::exit(0);
         }
+        "selfupgrade" => selfupgrade::run(rest),
         // 機械向け。シェル補完から呼ばれる。SPEC.md「補完プロトコル」参照。
         "__complete" => {
             complete(rest);
@@ -49,27 +52,19 @@ fn main() {
             let mut c = DescribeCache::load();
             for cmd in discovery::list() {
                 let d = describe(&mut c, &cmd).unwrap_or_default();
-                println!("{}\t{}\t{}", cmd.name, cmd.path.display(), d);
+                println!(
+                    "{}\t{}\t{}\t{}",
+                    cmd.name,
+                    cmd.path.display(),
+                    cmd.origin.label(),
+                    d
+                );
             }
             c.save();
             std::process::exit(0);
         }
         // どの定義が勝っているかを見る。探索順が絡む以上、これが無いと調べようがない。
-        "which" => {
-            let Some(target) = rest.first() else {
-                die("使い方: haj which <コマンド名>");
-            };
-            match discovery::resolve(target) {
-                Some(cmd) => {
-                    println!("{}", cmd.path.display());
-                    std::process::exit(0);
-                }
-                None => {
-                    eprintln!("haj: 未知のコマンドです: {target}");
-                    std::process::exit(1);
-                }
-            }
-        }
+        "which" => which(rest),
         _ => {}
     }
 
@@ -87,6 +82,22 @@ fn main() {
         Some(root) => proc.env("HAJ_ROOT", root),
         None => proc.env_remove("HAJ_ROOT"),
     };
+
+    // いま「どのプロジェクトに対して」操作しているのか。
+    //
+    // setup や reset は破壊的なので、どのプロジェクトが対象なのかをサブコマンド自身が
+    // 名乗れないと事故る。cwd から決まる現在のプロジェクトを渡す
+    // (コマンドが属するツリーは HAJ_ROOT。root=false の入れ子では両者は一致しない)。
+    match discovery::active_project() {
+        Some(p) => {
+            proc.env("HAJ_PROJECT", &p.name);
+            proc.env("HAJ_PROJECT_DIR", &p.dir);
+        }
+        None => {
+            proc.env_remove("HAJ_PROJECT");
+            proc.env_remove("HAJ_PROJECT_DIR");
+        }
+    }
 
     let err = proc.exec(); // 成功すれば戻ってこない
     eprintln!("haj: {} を実行できません: {err}", cmd.path.display());
@@ -117,6 +128,38 @@ fn describe(cache: &mut DescribeCache, cmd: &Command) -> Option<String> {
     cache.get_or_insert(contract::stamp(&cmd.path), || contract::describe(cmd))
 }
 
+/// `haj which <名前>` / `haj which --all <名前>`
+///
+/// 同名のコマンドが複数あるとき、どれが勝っていて何が隠れているのかを見せる。
+/// 探索順が cwd に依存する以上、これが無いと調べようがない。
+fn which(args: &[String]) -> ! {
+    let all = args.iter().any(|a| a == "--all" || a == "-a");
+    let Some(target) = args.iter().find(|a| !a.starts_with('-')) else {
+        eprintln!("haj: 使い方: haj which [--all] <コマンド名>");
+        std::process::exit(1);
+    };
+
+    let cands = discovery::candidates(target);
+    if cands.is_empty() {
+        eprintln!("haj: 未知のコマンドです: {target}");
+        std::process::exit(1);
+    }
+
+    if !all {
+        println!("{}", cands[0].path.display());
+        std::process::exit(0);
+    }
+
+    for (i, c) in cands.iter().enumerate() {
+        let mark = if i == 0 { "*" } else { " " };
+        println!("{mark} {} {}", c.path.display(), c.origin.label());
+    }
+    if cands.len() > 1 {
+        println!("\n(* が実行されるもの。他は隠れている)");
+    }
+    std::process::exit(0);
+}
+
 /// `haj help` / `haj help <名前>`
 ///
 /// コマンド一覧は --haj-describe を全コマンドに聞いて自動生成する。
@@ -124,6 +167,10 @@ fn describe(cache: &mut DescribeCache, cmd: &Command) -> Option<String> {
 /// ヘルプを書き足す必要がない、というのがこの設計の主眼。
 fn print_help(topic: Option<&str>) {
     if let Some(topic) = topic {
+        if topic == "selfupgrade" {
+            selfupgrade::help();
+            return;
+        }
         let Some(cmd) = discovery::resolve(topic) else {
             eprintln!("haj: 未知のコマンドです: {topic}");
             std::process::exit(1);
@@ -143,6 +190,13 @@ fn print_help(topic: Option<&str>) {
         print!("{header}");
     }
 
+    // いまどのプロジェクトの中にいるのかを最初に言う。
+    // 同名のコマンド(setup など)がプロジェクトごとに違う挙動をする以上、
+    // 「どのプロジェクトの haj を見ているのか」が分からないままでは危ない。
+    if let Some(p) = discovery::active_project() {
+        println!("\n プロジェクト: {}  ({})", p.name, p.dir.display());
+    }
+
     let mut cache = DescribeCache::load();
     let cmds = discovery::list();
     if cmds.is_empty() {
@@ -151,9 +205,23 @@ fn print_help(topic: Option<&str>) {
     } else {
         println!("\n hajコマンド (haj help <名前> で詳細):");
         let width = cmds.iter().map(|c| c.name.len()).max().unwrap_or(0).max(8);
+        let dwidth = cmds
+            .iter()
+            .map(|c| describe(&mut cache, c).unwrap_or_default().chars().count())
+            .max()
+            .unwrap_or(0)
+            .min(48);
         for cmd in &cmds {
             let d = describe(&mut cache, cmd).unwrap_or_default();
-            println!("   {:width$}  {}", cmd.name, d, width = width);
+            // 出自を右端に出す。同名でどれが効いているか、一覧の時点で見えるように。
+            println!(
+                "   {:width$}  {:dwidth$}  {}",
+                cmd.name,
+                d,
+                cmd.origin.label(),
+                width = width,
+                dwidth = dwidth,
+            );
         }
     }
     cache.save();
@@ -176,7 +244,13 @@ fn print_usage() {
         let width = cmds.iter().map(|c| c.name.len()).max().unwrap_or(0).max(8);
         for cmd in &cmds {
             let d = describe(&mut cache, cmd).unwrap_or_default();
-            eprintln!("  {:width$}  {}", cmd.name, d, width = width);
+            eprintln!(
+                "  {:width$}  {}  {}",
+                cmd.name,
+                d,
+                cmd.origin.label(),
+                width = width
+            );
         }
     }
     cache.save();
@@ -193,7 +267,7 @@ fn dirs_hint() -> String {
         )
     } else {
         dirs.iter()
-            .map(|d| d.display().to_string())
+            .map(|d| d.path.display().to_string())
             .collect::<Vec<_>>()
             .join(", ")
     }
@@ -224,9 +298,4 @@ fn complete(args: &[String]) {
     for c in contract::complete(&cmd, words) {
         println!("{c}");
     }
-}
-
-fn die(msg: &str) -> ! {
-    eprintln!("haj: {msg}");
-    std::process::exit(1);
 }

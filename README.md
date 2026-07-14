@@ -127,7 +127,64 @@ chmod +x .haj/commands/deploy
 | 3 | `$HAJ_COMMAND_PATH`(既定 `/usr/local/lib/haj/commands`) | 全社/イメージ共通 |
 | 4 | `$PATH` の `haj-<名前>` | git 方式の逃げ道 |
 
-どれが勝っているか分からなくなったら `haj which <名前>`。
+## `.haj` は壁である
+
+**1 の遡上は `/` までは行かない。`.haj` を持つディレクトリで止まる。**
+
+止めないと、誰かが `~/repos/.haj/commands/setup` を置いただけで、その配下の**全リポジトリ**に
+`haj setup` が生えてしまう。置いた本人以外は気づけない。`setup` や `reset` は破壊的なので、
+これは事故になる。
+
+境界と名前は `.haj/project` で宣言する(**無くてもよい**。既定で「境界」かつ「名前は
+ディレクトリ名」)。
+
+```
+name = example-app
+root = true      # 既定。false にすると親の .haj も探しに行く(モノレポ用)
+```
+
+継承は常にオプトインなので、**知らないうちに上流のコマンドが効くことはない**。
+
+## どのプロジェクトの setup が走るのか
+
+同じ `haj setup` がプロジェクトごとに違う挙動をする以上、いまどれが効いているのかが
+見えないこと自体が欠陥です。3つの方法で常に見えるようにしてあります。
+
+```console
+$ haj
+ プロジェクト: webapp  (~/repos/example-app/web/webapp)
+
+ hajコマンド (haj help <名前> で詳細):
+   bao-login  Vaultにログイン           [共通]
+   mig        DBマイグレーション          [example-app]
+   setup      webapp のセットアップ   [webapp]
+
+$ haj which --all setup
+* ~/repos/example-app/web/webapp/.haj/commands/setup  [webapp]
+  ~/repos/example-app/.haj/commands/setup                 [example-app]
+  /usr/local/lib/haj/commands/setup                              [共通]
+
+(* が実行されるもの。他は隠れている)
+```
+
+さらにコアは **`HAJ_PROJECT` / `HAJ_PROJECT_DIR`** を渡すので、破壊的なコマンドは
+対象を名乗れます。
+
+```sh
+echo "==> ${HAJ_PROJECT}: セットアップします"
+```
+
+`HAJ_ROOT`(そのコマンドがどこから来たか)と `HAJ_PROJECT`(いまどこに対して実行して
+いるか)は**別物**です。共通の `mig` をプロジェクトの中で叩けば前者は `/usr/local/lib/haj`、
+後者は `example-app` になります。
+
+## 自分自身の更新
+
+```sh
+haj selfupgrade            # 最新なら何もしない
+haj selfupgrade 0.2.0      # その版を無条件に入れる(ダウングレードもこれ)
+haj selfupgrade --check    # 調べるだけ (0=最新 / 1=更新あり / 2=調べられず)
+```
 
 ## ディレクトリ構成(ツリー)
 
