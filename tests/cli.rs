@@ -990,6 +990,177 @@ fn 未知のトピックはエラー() {
     assert_eq!(out.status.code(), Some(1));
 }
 
+// ---- haj tree(SPEC §9.5): 共有ツリーの配布 ----
+
+/// サンドボックス内に「配布元」の git リポジトリを作る。
+fn git_remote(sb: &Sandbox, rel: &str) -> PathBuf {
+    let dir = sb.path(rel);
+    fs::create_dir_all(&dir).unwrap();
+    git(&dir, &["init", "--quiet", "-b", "main"]);
+    dir
+}
+
+fn git(dir: &Path, args: &[&str]) {
+    let st = Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(["-c", "user.email=t@example.com", "-c", "user.name=t"])
+        .args(args)
+        .output()
+        .unwrap();
+    assert!(
+        st.status.success(),
+        "git {:?} failed: {}",
+        args,
+        String::from_utf8_lossy(&st.stderr)
+    );
+}
+
+fn commit_all(dir: &Path, msg: &str) {
+    git(dir, &["add", "-A"]);
+    git(dir, &["commit", "--quiet", "-m", msg]);
+}
+
+#[test]
+fn ツリーをinstallすると探索に乗りupdateで差分が見えremoveで消える() {
+    let sb = Sandbox::new("tree-lifecycle");
+    let cp = sb.path("nonexistent");
+    let cp = cp.to_str().unwrap();
+
+    // 配布元: ルート直下に commands/(形態1)
+    let remote = git_remote(&sb, "remote/tools");
+    sb.command(
+        "remote/tools",
+        "greet",
+        &conforming("あいさつ", "", "", "echo HELLO"),
+    );
+    commit_all(&remote, "greet");
+
+    // install(名前はリポジトリ名 tools)
+    let out = sb.haj(&sb.dir, cp, &["tree", "install", remote.to_str().unwrap()]);
+    assert!(
+        out.status.success(),
+        "install 失敗: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    // 探索に乗って実行できる。出自ラベルも出る
+    let out = sb.haj(&sb.dir, cp, &["greet"]);
+    assert_eq!(
+        stdout(&out).trim(),
+        "HELLO",
+        "ツリーのコマンドが実行できない"
+    );
+    let help = stdout(&sb.haj(&sb.dir, cp, &["help"]));
+    assert!(help.contains("[tools]"), "出自が出ない:\n{help}");
+
+    // list に出る
+    let list = stdout(&sb.haj(&sb.dir, cp, &["tree", "list"]));
+    assert!(list.contains("tools"), "list に出ない:\n{list}");
+
+    // 配布元にコマンドを足して update → 差分が見えて、新コマンドが使える
+    sb.command(
+        "remote/tools",
+        "bye",
+        &conforming("わかれ", "", "", "echo BYE"),
+    );
+    commit_all(&remote, "byeを追加");
+    let out = sb.haj(&sb.dir, cp, &["tree", "update"]);
+    assert!(
+        out.status.success(),
+        "update 失敗: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        stdout(&out).contains("byeを追加"),
+        "差分が見えない:\n{}",
+        stdout(&out)
+    );
+    let out = sb.haj(&sb.dir, cp, &["bye"]);
+    assert_eq!(stdout(&out).trim(), "BYE");
+
+    // 最新なら「最新です」
+    let out = sb.haj(&sb.dir, cp, &["tree", "update", "tools"]);
+    assert!(stdout(&out).contains("最新"), "{}", stdout(&out));
+
+    // remove で探索から消える
+    let out = sb.haj(&sb.dir, cp, &["tree", "remove", "tools"]);
+    assert!(out.status.success());
+    let out = sb.haj(&sb.dir, cp, &["greet"]);
+    assert_eq!(out.status.code(), Some(127), "remove 後も残っている");
+}
+
+#[test]
+fn haj形式のリポジトリとconfigの名前とエイリアス配布() {
+    let sb = Sandbox::new("tree-dothaj");
+    let cp = sb.path("nonexistent");
+    let cp = cp.to_str().unwrap();
+
+    // 形態2: .haj/ を持つ普通のプロジェクト。config で名前とエイリアスを配る
+    let remote = git_remote(&sb, "remote/myapp");
+    sb.command(
+        "remote/myapp/.haj",
+        "deploy",
+        &conforming("デプロイ", "", "", "echo DEPLOYED"),
+    );
+    sb.write(
+        "remote/myapp/.haj/config",
+        "name = shared-tools\nalias.hi = sh -- echo HI_FROM_TREE\nalias.hi.desc = ツリー配布のエイリアス\n",
+    );
+    commit_all(&remote, "tree");
+
+    let out = sb.haj(&sb.dir, cp, &["tree", "install", remote.to_str().unwrap()]);
+    assert!(
+        out.status.success(),
+        "install 失敗: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    // 名前は config の name が勝つ
+    assert!(
+        stdout(&out).contains("shared-tools"),
+        "config の name が使われない:\n{}",
+        stdout(&out)
+    );
+
+    // .haj の下の commands が探索に乗る
+    let out = sb.haj(&sb.dir, cp, &["deploy"]);
+    assert_eq!(stdout(&out).trim(), "DEPLOYED");
+
+    // ツリー config のエイリアスが効く(スコープは ユーザー設定より遠い)
+    let out = sb.haj(&sb.dir, cp, &["hi"]);
+    assert_eq!(
+        stdout(&out).trim(),
+        "HI_FROM_TREE",
+        "ツリーのエイリアスが効かない"
+    );
+    let help = stdout(&sb.haj(&sb.dir, cp, &["help"]));
+    assert!(
+        help.contains("ツリー配布のエイリアス"),
+        "desc が出ない:\n{help}"
+    );
+}
+
+#[test]
+fn 空のリポジトリはツリーとして認めない() {
+    let sb = Sandbox::new("tree-reject");
+    let cp = sb.path("nonexistent");
+
+    let remote = git_remote(&sb, "remote/junk");
+    sb.write("remote/junk/README.md", "ただのリポジトリ\n");
+    commit_all(&remote, "junk");
+
+    let out = sb.haj(
+        &sb.dir,
+        cp.to_str().unwrap(),
+        &["tree", "install", remote.to_str().unwrap()],
+    );
+    assert_eq!(out.status.code(), Some(1), "ゴミが入ってしまう");
+    // 失敗したものが置き場に残らない
+    let trees = sb.path(".local/share/haj/trees");
+    let leftover = fs::read_dir(&trees).map(|d| d.count()).unwrap_or(0);
+    assert_eq!(leftover, 0, "失敗の残骸がある");
+}
+
 // ---- エイリアス(SPEC §2.7): git 方式 ----
 
 /// XDG_CONFIG_HOME を差し替えて haj を走らせる(エイリアスのテスト用)。
