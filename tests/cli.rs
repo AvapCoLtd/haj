@@ -1198,10 +1198,7 @@ fn completionのzsh版はevalしても補完関数を即実行しない() {
     // eval で読み込まれたときは compdef で登録するだけにする。
     // 補完コンテキストの外で _haj を呼ぶと _describe が
     // "can only be called from completion function" で怒る。
-    assert!(
-        s.contains("compdef _haj haj"),
-        "eval 用の登録が無い:\n{s}"
-    );
+    assert!(s.contains("compdef _haj haj"), "eval 用の登録が無い:\n{s}");
     assert!(
         s.contains("funcstack[1]"),
         "autoload と eval を見分けていない:\n{s}"
