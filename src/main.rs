@@ -615,6 +615,28 @@ fn dirs_hint() -> String {
 /// これによりシェル補完スクリプトは候補を一切持たない。コマンドを足しても
 /// 補完を書き足す必要がない。
 fn complete(args: &[String]) {
+    // グローバルフラグ(SPEC §3.2)を本体と同じ規則で読み飛ばす。-C は実際に移動する
+    // (移動先のコマンド名を補完するため)。値が未入力のフラグで終わっている場合は
+    // 候補を作れない(値の補完はシェル側がファイル/ディレクトリ補完で行う)。
+    let mut idx = 0;
+    while idx < args.len() {
+        match args[idx].as_str() {
+            "-C" => {
+                let Some(dir) = args.get(idx + 1) else { return };
+                let _ = std::env::set_current_dir(expand_home(dir));
+                idx += 2;
+            }
+            "--secret" | "--env-file" | "--secret-file" => {
+                if args.len() <= idx + 1 {
+                    return;
+                }
+                idx += 2;
+            }
+            _ => break,
+        }
+    }
+    let args = &args[idx..];
+
     let Some((name, words)) = args.split_first() else {
         complete_names();
         return;

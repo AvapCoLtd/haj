@@ -246,6 +246,61 @@ esac
 }
 
 #[test]
+fn 補完はグローバルフラグを読み飛ばす() {
+    // `haj --env-file f <TAB>` でコマンド名が、`haj --env-file f mig <TAB>` で
+    // mig の候補が出る(SPEC §6)。シェル側は語を素通しで渡すだけ。
+    let sb = Sandbox::new("complete-flags");
+    sb.command(
+        "sys",
+        "mig",
+        r#"#!/bin/sh
+case "$1" in
+  --haj-describe) echo "マイグレーション"; exit 0 ;;
+  --haj-complete) shift; if [ $# -eq 0 ]; then printf '%s\n' up down; fi; exit 0 ;;
+esac
+"#,
+    );
+    sb.command(
+        "proj/.haj",
+        "deploy",
+        &conforming("このリポジトリ専用", "", "", "true"),
+    );
+    sb.write("dummy.env", "A=b\n");
+
+    let cp = sb.path("sys/commands");
+    let cp = cp.to_str().unwrap();
+
+    // フラグの後ろはコマンド名の位置
+    let names = stdout(&sb.haj(&sb.dir, cp, &["__complete", "--env-file", "dummy.env"]));
+    assert!(
+        names.contains("mig"),
+        "フラグの後ろで名前が出ない:\n{names}"
+    );
+
+    // フラグ込みでもサブコマンドの --haj-complete へ届く
+    let ops = stdout(&sb.haj(
+        &sb.dir,
+        cp,
+        &["__complete", "--env-file", "dummy.env", "mig"],
+    ));
+    assert_eq!(ops.split_whitespace().collect::<Vec<_>>(), ["up", "down"]);
+
+    // -C は適用される(移動先のプロジェクトのコマンドが見える)
+    let inside = stdout(&sb.haj(&sb.dir, cp, &["__complete", "-C", "proj"]));
+    assert!(
+        inside.contains("deploy"),
+        "-C が反映されていない:\n{inside}"
+    );
+
+    // 値が未入力のフラグで終わる → 候補なし(値の補完はシェル側の仕事)
+    let none = stdout(&sb.haj(&sb.dir, cp, &["__complete", "--env-file"]));
+    assert!(
+        none.trim().is_empty(),
+        "値の位置で候補を出してはならない:\n{none}"
+    );
+}
+
+#[test]
 fn 規約に応答しないコマンドも実行はできる() {
     let sb = Sandbox::new("naive");
     // --haj-describe を知らない素朴なスクリプト。説明は空になるが、動くべき。
