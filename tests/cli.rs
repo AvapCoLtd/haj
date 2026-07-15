@@ -999,6 +999,23 @@ fn docsの一覧は非端末ならfzfがあっても素の印字のまま() {
 }
 
 #[test]
+fn configの雛形にdocsの鍵が載る() {
+    // 設定できる鍵は haj config --init が**すべて**雛形として出す(SPEC §8.2)。
+    // docs.* を KEYS に足し忘れると、設定できるのに発見できない鍵になる。
+    let sb = Sandbox::new("config-docs-keys");
+    let cp = sb.path("nonexistent");
+    let s = stdout(&sb.haj(&sb.dir, cp.to_str().unwrap(), &["config", "--init"]));
+    for k in [
+        "docs.fzf_cmd",
+        "docs.fzf_args",
+        "docs.preview_cmd",
+        "docs.pager",
+    ] {
+        assert!(s.contains(k), "{k} が雛形に無い:\n{s}");
+    }
+}
+
+#[test]
 fn ツリーのdocsは同梱の同名トピックに勝つ() {
     let sb = Sandbox::new("docs-shadow");
     sb.write(

@@ -486,6 +486,10 @@ haj config --init > ~/.config/haj/config
 |---|---|---|---|
 | `command_path` | `HAJ_COMMAND_PATH` | `/usr/local/lib/haj/commands` | システム共通のコマンド置き場(`:` 区切り) |
 | `hook_timeout_ms` | `HAJ_HOOK_TIMEOUT_MS` | `2000` | 規約フックのタイムアウト |
+| `docs.fzf_cmd` | `HAJ_DOCS_FZF_CMD` | `fzf` | docs の選択UIに使うコマンド(語分割。先頭がバイナリ)(§9.3) |
+| `docs.fzf_args` | `HAJ_DOCS_FZF_ARGS` | (無し) | 選択UIへ**追加**で渡す引数。haj の既定の後ろに付く(fzf は後勝ちなので上書きできる)(§9.3) |
+| `docs.preview_cmd` | `HAJ_DOCS_PREVIEW_CMD` | (無し) | プレビューのフィルタ。markdown を stdin で受ける(例: `glow -`)(§9.3) |
+| `docs.pager` | `HAJ_DOCS_PAGER` | `$PAGER`、無ければ `less` | Enter で開くビューア(§9.3) |
 | `secrets.op_cmd` | `HAJ_OP_CMD` | `op` | op 参照の解決に使う CLI(§10) |
 | `secrets.vault_cmd` | `HAJ_VAULT_CMD` | `vault` | vault 参照の解決に使う CLI(OpenBao なら `bao`)(§10) |
 | `secrets.vault_addr` | `VAULT_ADDR` | (無し) | vault サーバ。環境の `VAULT_ADDR` / `BAO_ADDR` が優先(§10.4) |
@@ -691,6 +695,11 @@ haj docs spec                # この仕様の全文(haj同梱)
   fzf が無い・TTY でない(パイプやリダイレクト)ときは従来どおり一覧を印字するだけ
   なので、スクリプトからの利用は変わらない。fzf / ページャは CLI への委譲
   (op / bao / git と同じ流儀)で、依存クレートは増やさない
+- 選択UIは設定で差し替え・味付けできる(§8.3)。`docs.fzf_cmd` は UI コマンドそのもの、
+  `docs.fzf_args` は追加引数(`--preview-window=up,90%,wrap` などで「fzf のまま読み切る」
+  構えにできる)、`docs.preview_cmd` はプレビューを markdown レンダラへ通すフィルタ
+  (本文を stdin で受ける。例: `glow -`)、`docs.pager` は Enter のビューア。
+  値はどれも空白で語分割するだけ(引用符は解釈しない — `secrets.vault_login` と同じ流儀)
 
 ### 9.4 `haj completion`
 
