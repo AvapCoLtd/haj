@@ -963,6 +963,42 @@ fn ツリーのdocsは探索に乗り一覧に出自と見出しが出る() {
 }
 
 #[test]
+fn docsの一覧は非端末ならfzfがあっても素の印字のまま() {
+    // 選択UI(SPEC §9.3)はstdoutが端末(TTY)のときだけ。パイプ(=このテスト)では
+    // fzfがPATHに居ても起動せず、従来の一覧を印字する — スクリプト互換の要。
+    let sb = Sandbox::new("docs-no-fzf-pipe");
+    let bin = sb.path("bin");
+    fs::create_dir_all(&bin).unwrap();
+    let fake = bin.join("fzf");
+    fs::write(
+        &fake,
+        format!("#!/bin/sh\ntouch '{}/fzf-was-called'\n", sb.dir.display()),
+    )
+    .unwrap();
+    fs::set_permissions(&fake, fs::Permissions::from_mode(0o755)).unwrap();
+
+    let cp = sb.path("nonexistent");
+    let out = Command::new(env!("CARGO_BIN_EXE_haj"))
+        .args(["docs"])
+        .current_dir(&sb.dir)
+        .env("HAJ_COMMAND_PATH", cp.to_str().unwrap())
+        .env("HAJ_NO_CACHE", "1")
+        .env("HOME", &sb.dir)
+        .env(
+            "PATH",
+            format!("{}:{}", bin.display(), std::env::var("PATH").unwrap()),
+        )
+        .output()
+        .unwrap();
+    let s = stdout(&out);
+    assert!(s.contains("writing-commands"), "一覧が出るべき:\n{s}");
+    assert!(
+        !sb.path("fzf-was-called").exists(),
+        "非TTYでfzfが呼ばれてはならない"
+    );
+}
+
+#[test]
 fn ツリーのdocsは同梱の同名トピックに勝つ() {
     let sb = Sandbox::new("docs-shadow");
     sb.write(

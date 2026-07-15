@@ -7,7 +7,9 @@
 //!
 //! 出力は素の markdown を stdout へ。ページャは使う側のパイプに任せる(コアは薄く)。
 
+use std::io::{IsTerminal, Write};
 use std::path::PathBuf;
+use std::process::{Command, Stdio};
 
 use crate::project::Origin;
 
@@ -96,24 +98,137 @@ fn first_heading(path: &std::path::Path) -> String {
         .unwrap_or_default()
 }
 
+/// トピックの本文を読む(ツリー由来ならファイル、同梱なら埋め込み)。
+fn content_of(t: &Topic) -> Result<String, String> {
+    match &t.path {
+        Some(p) => {
+            std::fs::read_to_string(p).map_err(|e| format!("{} を読めません: {e}", p.display()))
+        }
+        None => Ok(EMBEDDED
+            .iter()
+            .find(|(n, _, _)| *n == t.name)
+            .map(|(_, _, c)| (*c).to_string())
+            .unwrap_or_default()),
+    }
+}
+
+/// fzf 選択の結果。
+enum Pick {
+    /// 選択UIを出せない環境(非TTY・fzf不在など)。従来の一覧印字に落ちる
+    Unavailable,
+    /// ユーザーが選ばずに閉じた(Esc 等)。何もせず正常終了する
+    Cancelled,
+    Chosen(String),
+}
+
+/// 引数なしの `haj docs` を、端末では fzf の選択UIにする(SPEC §9.3)。
+/// fzf は CLI への委譲(op / bao / git と同じ流儀)。stdout がパイプ・リダイレクト
+/// のときは UI を出さないので、スクリプトからの利用は従来と変わらない。
+fn pick_with_fzf(topics: &[Topic]) -> Pick {
+    if !std::io::stdout().is_terminal() {
+        return Pick::Unavailable;
+    }
+
+    // プレビューは自分自身に聞く(`haj docs <トピック>`)。開発中のバイナリが
+    // PATH に居なくても動くよう current_exe を使う。引用できないパスなら
+    // PATH の haj に任せる。
+    let me = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.to_str().map(String::from))
+        .filter(|s| !s.contains('\''))
+        .unwrap_or_else(|| "haj".to_string());
+
+    let Ok(mut child) = Command::new("fzf")
+        .arg("--delimiter=\t")
+        .arg("--prompt=haj docs> ")
+        .arg(format!("--preview='{me}' docs {{1}}"))
+        .arg("--preview-window=right,70%,wrap")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+    else {
+        return Pick::Unavailable; // fzf が無い
+    };
+
+    if let Some(mut stdin) = child.stdin.take() {
+        for t in topics {
+            let _ = writeln!(stdin, "{}\t{}  {}", t.name, t.describe, t.origin.label());
+        }
+    }
+    let Ok(out) = child.wait_with_output() else {
+        return Pick::Unavailable;
+    };
+    let sel = String::from_utf8_lossy(&out.stdout);
+    match sel.lines().next().and_then(|l| l.split('\t').next()) {
+        Some(name) if !name.is_empty() => Pick::Chosen(name.to_string()),
+        _ => Pick::Cancelled,
+    }
+}
+
+/// `${PAGER:-less}` で表示する。起動できなければ false(呼び出し元が print する)。
+/// PAGER は空白で語分割するだけ(シェル解釈はしない — vault_login の引数と同じ流儀)。
+fn show_with_pager(content: &str) -> bool {
+    let pager = std::env::var("PAGER").unwrap_or_default();
+    let pager = if pager.trim().is_empty() {
+        "less".to_string()
+    } else {
+        pager
+    };
+    let mut words = pager.split_whitespace();
+    let Some(bin) = words.next() else {
+        return false;
+    };
+    let Ok(mut child) = Command::new(bin).args(words).stdin(Stdio::piped()).spawn() else {
+        return false;
+    };
+    if let Some(mut stdin) = child.stdin.take() {
+        let _ = stdin.write_all(content.as_bytes());
+    }
+    child.wait().is_ok()
+}
+
 /// `haj docs` / `haj docs <トピック>`
 pub fn run(args: &[String]) -> ! {
     let Some(topic) = args.first() else {
         let topics = list();
         if topics.is_empty() {
             println!("ドキュメントがありません。");
-        } else {
-            println!(" ドキュメント (haj docs <トピック> で表示):");
-            let width = topics.iter().map(|t| t.name.len()).max().unwrap_or(8);
-            for t in &topics {
-                println!(
-                    "   {:width$}  {}  {}",
-                    t.name,
-                    t.describe,
-                    t.origin.label(),
-                    width = width
-                );
+            std::process::exit(0);
+        }
+
+        // 端末なら fzf の選択UI(SPEC §9.3)。出せない環境では一覧印字に落ちる
+        match pick_with_fzf(&topics) {
+            Pick::Chosen(name) => {
+                let Some(t) = topics.iter().find(|t| t.name == name) else {
+                    std::process::exit(1); // fzfの候補は list() 由来なので来ないはず
+                };
+                match content_of(t) {
+                    Ok(c) => {
+                        if !show_with_pager(&c) {
+                            print!("{c}");
+                        }
+                        std::process::exit(0);
+                    }
+                    Err(e) => {
+                        eprintln!("haj: {e}");
+                        std::process::exit(1);
+                    }
+                }
             }
+            Pick::Cancelled => std::process::exit(0),
+            Pick::Unavailable => {}
+        }
+
+        println!(" ドキュメント (haj docs <トピック> で表示):");
+        let width = topics.iter().map(|t| t.name.len()).max().unwrap_or(8);
+        for t in &topics {
+            println!(
+                "   {:width$}  {}  {}",
+                t.name,
+                t.describe,
+                t.origin.label(),
+                width = width
+            );
         }
         std::process::exit(0);
     };
@@ -124,22 +239,16 @@ pub fn run(args: &[String]) -> ! {
         std::process::exit(1);
     };
 
-    let content = match &t.path {
-        Some(p) => match std::fs::read_to_string(p) {
-            Ok(s) => s,
-            Err(e) => {
-                eprintln!("haj: {} を読めません: {e}", p.display());
-                std::process::exit(1);
-            }
-        },
-        None => EMBEDDED
-            .iter()
-            .find(|(n, _, _)| n == topic)
-            .map(|(_, _, c)| c.to_string())
-            .unwrap_or_default(),
-    };
-    print!("{content}");
-    std::process::exit(0);
+    match content_of(t) {
+        Ok(content) => {
+            print!("{content}");
+            std::process::exit(0);
+        }
+        Err(e) => {
+            eprintln!("haj: {e}");
+            std::process::exit(1);
+        }
+    }
 }
 
 /// `haj docs <TAB>` の補完候補。
