@@ -999,6 +999,44 @@ fn docsの一覧は非端末ならfzfがあっても素の印字のまま() {
 }
 
 #[test]
+fn 環境変数はコマンド自身に聞きenv_fileへ往復できる() {
+    // haj env <名前> は --haj-env の中継(SPEC §4.4)。出力はそのまま
+    // --env-file に渡せる形式なので、雛形→編集→注入、が往復する。
+    let sb = Sandbox::new("env-hook");
+    sb.command(
+        "sys",
+        "met",
+        r##"#!/bin/sh
+case "$1" in
+  --haj-describe) echo "計測"; exit 0 ;;
+  --haj-env) printf '%s\n' "# 対象DB" "FOO=${FOO:-default1}" "BAR=b"; exit 0 ;;
+esac
+echo "FOO=$FOO"
+"##,
+    );
+    // --haj-env に応答しない素朴なコマンド
+    sb.command("sys", "plain", "#!/bin/sh\necho ran\n");
+
+    let cp = sb.path("sys/commands");
+    let cp = cp.to_str().unwrap();
+
+    let out = sb.haj(&sb.dir, cp, &["env", "met"]);
+    assert!(out.status.success());
+    let s = stdout(&out);
+    assert!(s.contains("FOO=default1"), "既定値が出ない:\n{s}");
+    assert!(s.contains("# 対象DB"), "コメントが落ちている:\n{s}");
+
+    // 雛形→編集→--env-file で注入、の往復
+    sb.write("env.txt", "# 対象DB\nFOO=edited\n");
+    let run = stdout(&sb.haj(&sb.dir, cp, &["--env-file", "env.txt", "met"]));
+    assert_eq!(run.trim(), "FOO=edited", "編集した値が渡っていない");
+
+    // 未対応のコマンドはエラー(黙って空を出さない)
+    let no = sb.haj(&sb.dir, cp, &["env", "plain"]);
+    assert!(!no.status.success(), "--haj-env未対応はエラーにすべき");
+}
+
+#[test]
 fn configの雛形にdocsの鍵が載る() {
     // 設定できる鍵は haj config --init が**すべて**雛形として出す(SPEC §8.2)。
     // docs.* を KEYS に足し忘れると、設定できるのに発見できない鍵になる。

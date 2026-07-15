@@ -143,6 +143,28 @@ fn main() {
         "completion" => completion::run(rest),
         // 何が展開されるのかを、金庫に触らずに確かめる。SPEC.md §10.6。
         "secrets" => secrets::run(rest, &deliveries),
+        // コマンドが読む環境変数を中継する(--haj-env)。出力は --env-file に渡せる形式。
+        // 「どの環境変数を読むのか」はコマンドの中身の知識なので、コアは聞くだけ。SPEC §4.4。
+        "env" => {
+            let Some(target) = rest.first() else {
+                die("使い方: haj env <コマンド>");
+            };
+            let Some(cmd) = discovery::resolve(target) else {
+                eprintln!("haj: 未知のコマンドです: {target}");
+                std::process::exit(1);
+            };
+            match contract::env_vars(&cmd) {
+                Some(v) => println!("{v}"),
+                None => {
+                    eprintln!(
+                        "haj: {target} は --haj-env に対応していません ({})",
+                        cmd.path.display()
+                    );
+                    std::process::exit(1);
+                }
+            }
+            std::process::exit(0);
+        }
         // 機械向け。シェル補完から呼ばれる。SPEC.md「補完プロトコル」参照。
         "__complete" => {
             complete(rest);

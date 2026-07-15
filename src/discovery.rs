@@ -323,6 +323,7 @@ pub fn is_reserved(name: &str) -> bool {
         name,
         "help"
             | "commands"
+            | "env"
             | "which"
             | "completion"
             | "config"

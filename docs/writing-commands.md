@@ -70,13 +70,18 @@ EOF
     # $# = 入力済みの語数。0 なら1語目の候補を返す($# -le 1 と書くと1つずれる)
     if [ $# -eq 0 ]; then printf '%s\n' up down status; fi
     exit 0 ;;
+  --haj-env)
+    # 読む環境変数を KEY=value で。`haj env <名前>` が中継し、出力はそのまま
+    # --env-file に渡せる(haj env mig > env.txt → 編集 → haj --env-file env.txt mig)
+    printf '%s\n' "# 対象DB" "DB_HOST=${DB_HOST:-db.staging.internal}" "LONG_TX_SEC=${LONG_TX_SEC:-60}"
+    exit 0 ;;
 esac
 
 # ---- ここから本体。重い初期化はフックの後に置く(TABの速さに直結する) ----
 echo "本処理"
 ```
 
-フックの制約(SPEC §4.4):
+フックの制約(SPEC §4.5):
 
 - **stdin は /dev/null**。入力を待ってはならない
 - **stderr は捨てられる**。タイムアウトは既定2秒 — 超えると SIGKILL

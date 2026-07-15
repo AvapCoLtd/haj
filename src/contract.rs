@@ -13,6 +13,7 @@ use crate::discovery::Command;
 pub const DESCRIBE: &str = "--haj-describe";
 pub const HELP: &str = "--haj-help";
 pub const COMPLETE: &str = "--haj-complete";
+pub const ENV: &str = "--haj-env";
 
 /// 規約フックの実行に許す時間。
 ///
@@ -96,6 +97,23 @@ pub fn long_help(cmd: &Command) -> Option<String> {
         .map(|s| s.trim_end().to_string())
         .filter(|s| !s.is_empty())
         .or_else(|| describe(cmd))
+}
+
+/// `--haj-env` — そのコマンドが読む環境変数(KEY=value)。未実装なら None。
+///
+/// 出力はそのまま --env-file に渡せる形式(SPEC §4.4)。規約を知らないコマンドは
+/// このフラグを無視して**本処理の出力**を返してくるため、形の検証で見分ける:
+/// 空行と `#` コメント以外の行がすべて `KEY=value` の形でなければ未実装とみなす。
+pub fn env_vars(cmd: &Command) -> Option<String> {
+    let out = hook(cmd, &[ENV])
+        .map(|s| s.trim_end().to_string())
+        .filter(|s| !s.is_empty())?;
+    let conforms = out
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .all(|l| l.split_once('=').is_some_and(|(k, _)| !k.trim().is_empty()));
+    conforms.then_some(out)
 }
 
 /// 補完候補。`words` は「そのコマンド以降に入力済みの語」。
