@@ -148,6 +148,30 @@ pub const KEYS: &[(&str, &str, &str, &str)] = &[
         "規約フック (--haj-describe 等) のタイムアウト (ミリ秒)",
     ),
     (
+        "HAJ_DOCS_FZF_CMD",
+        "docs.fzf_cmd",
+        "fzf",
+        "docs の選択UIに使うコマンド (語分割。先頭がバイナリ)",
+    ),
+    (
+        "HAJ_DOCS_FZF_ARGS",
+        "docs.fzf_args",
+        "",
+        "選択UIへ追加で渡す引数 (haj の既定の後ろに付く。fzf は後勝ち)",
+    ),
+    (
+        "HAJ_DOCS_PREVIEW_CMD",
+        "docs.preview_cmd",
+        "",
+        "プレビューのフィルタ。markdown を stdin で受ける (例: glow -)",
+    ),
+    (
+        "HAJ_DOCS_PAGER",
+        "docs.pager",
+        "",
+        "Enter で開くビューア (既定: $PAGER、無ければ less)",
+    ),
+    (
         "HAJ_OP_CMD",
         "secrets.op_cmd",
         "op",
@@ -209,6 +233,7 @@ fn group_of(file_key: &str) -> &str {
 fn group_title(group: &str) -> &str {
     match group {
         "" => "コア (探索と規約)",
+        "docs" => "docs: ドキュメントの選択UI (SPEC §9.3)",
         "secrets" => "secrets: シークレット参照の解決 (SPEC §10)",
         "selfupgrade" => "selfupgrade: haj自身の更新 (SPEC §9.1)",
         other => other,

@@ -134,10 +134,16 @@ enum Pick {
 /// 引数なしの `haj docs` を、端末では fzf の選択UIにする(SPEC §9.3)。
 /// fzf は CLI への委譲(op / bao / git と同じ流儀)。stdout がパイプ・リダイレクト
 /// のときは UI を出さないので、スクリプトからの利用は従来と変わらない。
+/// UIコマンド・追加引数・プレビューのフィルタは設定で差し替えられる(§8.3)。
 fn pick_with_fzf(topics: &[Topic]) -> Pick {
     if !std::io::stdout().is_terminal() {
         return Pick::Unavailable;
     }
+
+    let cfg = crate::config::Config::load();
+    let (fzf_cmd, _) = cfg.get("HAJ_DOCS_FZF_CMD", "docs.fzf_cmd", "fzf");
+    let (fzf_args, _) = cfg.get("HAJ_DOCS_FZF_ARGS", "docs.fzf_args", "");
+    let (preview_cmd, _) = cfg.get("HAJ_DOCS_PREVIEW_CMD", "docs.preview_cmd", "");
 
     // プレビューは自分自身に聞く(`haj docs <トピック>`)。開発中のバイナリが
     // PATH に居なくても動くよう current_exe を使う。引用できないパスなら
@@ -148,16 +154,29 @@ fn pick_with_fzf(topics: &[Topic]) -> Pick {
         .filter(|s| !s.contains('\''))
         .unwrap_or_else(|| "haj".to_string());
 
-    let Ok(mut child) = Command::new("fzf")
+    // docs.preview_cmd はプレビューを markdown レンダラへ通すフィルタ(本文を stdin で受ける)
+    let preview = if preview_cmd.trim().is_empty() {
+        format!("'{me}' docs {{1}}")
+    } else {
+        format!("'{me}' docs {{1}} | {preview_cmd}")
+    };
+
+    let mut words = fzf_cmd.split_whitespace();
+    let Some(bin) = words.next() else {
+        return Pick::Unavailable;
+    };
+    let mut ui = Command::new(bin);
+    ui.args(words)
         .arg("--delimiter=\t")
         .arg("--prompt=haj docs> ")
-        .arg(format!("--preview='{me}' docs {{1}}"))
-        .arg("--preview-window=right,70%,wrap")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .spawn()
-    else {
-        return Pick::Unavailable; // fzf が無い
+        .arg(format!("--preview={preview}"))
+        .arg("--preview-window=right,70%,wrap");
+    // 追加引数は haj の既定の**後ろ**に付ける。fzf は後勝ちなので、
+    // --preview-window 等を設定で上書きできる
+    ui.args(fzf_args.split_whitespace());
+
+    let Ok(mut child) = ui.stdin(Stdio::piped()).stdout(Stdio::piped()).spawn() else {
+        return Pick::Unavailable; // UIコマンドが無い
     };
 
     if let Some(mut stdin) = child.stdin.take() {
@@ -175,10 +194,16 @@ fn pick_with_fzf(topics: &[Topic]) -> Pick {
     }
 }
 
-/// `${PAGER:-less}` で表示する。起動できなければ false(呼び出し元が print する)。
-/// PAGER は空白で語分割するだけ(シェル解釈はしない — vault_login の引数と同じ流儀)。
+/// Enter で開くビューア。`docs.pager` > `$PAGER` > `less` の順で決める。
+/// 起動できなければ false(呼び出し元が print する)。
+/// 値は空白で語分割するだけ(シェル解釈はしない — vault_login の引数と同じ流儀)。
 fn show_with_pager(content: &str) -> bool {
-    let pager = std::env::var("PAGER").unwrap_or_default();
+    let (pager, _) = crate::config::Config::load().get("HAJ_DOCS_PAGER", "docs.pager", "");
+    let pager = if pager.trim().is_empty() {
+        std::env::var("PAGER").unwrap_or_default()
+    } else {
+        pager
+    };
     let pager = if pager.trim().is_empty() {
         "less".to_string()
     } else {
