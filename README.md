@@ -206,6 +206,15 @@ EOF
 chmod +x ~/bin/glab
 ```
 
+**このときエイリアスの `exec` は本物の絶対パスにすること**(`haj exec` は PATH を
+引くので、`exec glab` のままだとシム自身をまた拾って無限ループする。絶対パスなら
+PATH を引かない):
+
+```
+alias.glab = --secret-file GLAB_CONFIG_DIR/config.yml=~/.config/glab-cli/config.yml.tpl \
+            exec /usr/local/bin/glab
+```
+
 
 ## もっと知る
 
