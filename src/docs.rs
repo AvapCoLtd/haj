@@ -24,6 +24,16 @@ const EMBEDDED: &[(&str, &str, &str)] = &[
         include_str!("../docs/writing-commands.md"),
     ),
     (
+        "secrets",
+        "シークレットの受け渡し(--secret / --env-file / --secret-file)",
+        include_str!("../docs/secrets.md"),
+    ),
+    (
+        "trees",
+        "ツリーの作り方と配布(haj tree)",
+        include_str!("../docs/trees.md"),
+    ),
+    (
         "spec",
         "haj 仕様(コアとサブコマンドの契約の全文)",
         include_str!("../SPEC.md"),
