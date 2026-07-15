@@ -2,10 +2,13 @@
 # hajのzsh補完。
 #
 # 候補をここに書かない。コアの `haj __complete` に聞くだけ。
-#   haj __complete              → "名前\t説明" を列挙(探索で見つかった全コマンド)
-#   haj __complete <名前> <語...> → そのコマンドの --haj-complete へ転送
+#   haj __complete <語...>   → 入力済みの語(グローバルフラグ込み)を素通しで渡す。
+#                              コアが本体と同じ規則でフラグを読み飛ばし(-Cは適用)、
+#                              コマンド名の一覧("名前\t説明")か、そのコマンドの
+#                              --haj-complete の候補を返す。
 #
-# よってサブコマンドを足しても、このファイルを触る必要はない。
+# シェル側で処理するのは「フラグの値の位置」だけ(ファイル/ディレクトリ補完は
+# シェルにしかできない)。よってサブコマンドを足しても、このファイルは変わらない。
 #
 # コアが `@delegate<TAB><argv...>` を返したときは、**そのコマンド自身の補完に委譲**する
 # (`haj exec kubectl <TAB>` や、exec を含むエイリアス)。sudo / env などのラッパーが
@@ -15,9 +18,46 @@ _haj() {
   local -a cands
   local line name desc
 
-  if (( CURRENT == 2 )); then
-    # コマンド名の補完。`名前\t説明` を zsh の `名前:説明` 形式へ直す。
-    for line in ${(f)"$(haj __complete 2>/dev/null)"}; do
+  # グローバルフラグ(コマンド名の前)を読み飛ばす。値の位置ならここで補完する。
+  local i=2
+  while (( i < CURRENT )); do
+    case ${words[i]} in
+      -C)
+        (( i + 1 == CURRENT )) && { _directories; return }
+        (( i += 2 )) ;;
+      --env-file)
+        (( i + 1 == CURRENT )) && { _files; return }
+        (( i += 2 )) ;;
+      --secret|--secret-file)
+        if (( i + 1 == CURRENT )); then
+          if [[ ${words[CURRENT]} == *=* ]]; then
+            # 名前= の右辺。--secret-file はテンプレートのパスも書けるのでファイル補完
+            compset -P '*='
+            _files
+          else
+            _message '名前=参照 (vault://… / op://… など)'
+          fi
+          return
+        fi
+        (( i += 2 )) ;;
+      *) break ;;
+    esac
+  done
+
+  if (( i == CURRENT )); then
+    # コマンド名の位置。`-` で始めたらグローバルフラグを出す
+    if [[ ${words[CURRENT]} == -* ]]; then
+      cands=(
+        '-C:そのディレクトリを起点に実行する (gitと同じ)'
+        '--secret:参照を展開して環境変数で渡す'
+        '--env-file:key = value のファイルを展開して渡す'
+        '--secret-file:値をファイルに書いて渡す'
+      )
+      _describe -t flags 'haj フラグ' cands
+      return
+    fi
+    # コマンド名。フラグ込みで core に聞く(core が読み飛ばす。-C は反映される)
+    for line in ${(f)"$(haj __complete ${words[2,CURRENT-1]} 2>/dev/null)"}; do
       name=${line%%$'\t'*}
       desc=${line#*$'\t'}
       cands+=("${name}:${desc}")
@@ -26,8 +66,8 @@ _haj() {
     return
   fi
 
-  # 2語目以降は当該コマンドに聞く。カーソル直前までの入力済みの語を渡す。
-  cands=(${(f)"$(haj __complete ${words[2]} ${words[3,CURRENT-1]} 2>/dev/null)"})
+  # サブコマンド以降。入力済みの語を(フラグ込みで)素通しで core へ。
+  cands=(${(f)"$(haj __complete ${words[2,CURRENT-1]} 2>/dev/null)"})
 
   # 委譲の指示: haj の外のコマンドなので、そのコマンド自身の補完に丸投げする。
   #
@@ -50,7 +90,7 @@ _haj() {
   fi
 
   (( ${#cands} )) || return 1
-  _describe -t values "haj ${words[2]}" cands
+  _describe -t values "haj ${words[i]}" cands
 }
 
 # fpath に置かれた場合(#compdef 経由の autoload)は補完関数として呼ばれる。
