@@ -133,7 +133,7 @@ root = true
 - 空文字列
 - `.` または `-` で始まるもの
 - `/` を含むもの
-- **予約語**: `help`, `commands`, `which`, `config`, `completion`, `docs`, `exec`, `sh`, `selfupgrade`, `secrets`, `tree`, `__complete`
+- **予約語**: `help`, `commands`, `which`, `config`, `completion`, `docs`, `env`, `exec`, `sh`, `selfupgrade`, `secrets`, `tree`, `__complete`
 
 予約語を弾くのは、`.haj/commands/help` を置かれるとコアのヘルプが奪われ、
 「コマンド一覧を出す手段が無くなる」状態に陥りうるため。`exec` / `sh` はさらに強い理由で
@@ -323,7 +323,35 @@ DBマイグレーション (status/up/down/create/edit)
 (新しいマイグレーションの名前)
 ```
 
-### 4.4 規約フックの制約
+### 4.4 `--haj-env` (任意)
+
+そのコマンドが**読む環境変数**を `KEY=value` で stdout に出し、`0` で終了する。
+`haj env <名前>` がこれを中継する。
+
+```console
+$ haj env metrics
+# 対象DBの接続先
+DB_HOST=db.staging.internal
+LONG_TX_SEC=60
+```
+
+- 値には既定値か、いま効いている値を出す(`${DB_HOST:-db.staging.internal}` のように
+  現在の環境を反映してよい。フックは呼び出し時の環境で走る)
+- `#` から行末はコメント。**出力はそのまま `--env-file` に渡せる形式**にする:
+
+```sh
+haj env metrics > env.txt    # 雛形を出す
+vi env.txt                   # 値を書き換える(シークレット参照も書ける)
+haj --env-file env.txt metrics
+```
+
+「どの環境変数を読むのか」はコマンドの中身の知識なので、コアは聞くだけ
+(describe と同じ思想)。ただし規約を知らないコマンドはこのフラグを無視して
+本処理の出力を返してくるため、コアは**形を検証する**: 空行と `#` コメント以外の
+行がすべて `KEY=value` でなければ、未実装として扱う(「そのまま `--env-file` に
+渡せる」という約束を壊れた出力から守る)。
+
+### 4.5 規約フックの制約
 
 - **stdin は `/dev/null`** に接続される。フックで入力を待ってはならない
 - **stderr は捨てられる**
@@ -331,7 +359,7 @@ DBマイグレーション (status/up/down/create/edit)
   そのコマンドは「説明なし/候補なし」として扱われる。他のコマンドは巻き添えにならない
 - **副作用を持ってはならない。** フックは `haj help` と TAB のたびに呼ばれる
 
-### 4.5 実装の型
+### 4.6 実装の型
 
 規約フックは**共通ライブラリを読む前に**処理すること。説明文を 1 行返すためだけに
 DB の環境変数を読み込むのは無駄で、TAB の体感速度に直結する。
@@ -539,6 +567,7 @@ selfupgrade.token = vault://secret/data/haj/token
 | `haj config [--init]` | 設定の実効値と出所。`--init` は雛形を出す(§8) |
 | `haj selfupgrade` | コア自身の更新(§9.1) |
 | `haj secrets` | シークレット参照の展開対象を確認する(§10.6) |
+| `haj env <名前>` | そのコマンドが読む環境変数を `KEY=value` で出す(`--haj-env` の中継。§4.4) |
 | `haj exec [--] <プログラム> [引数...]` | PATH のコマンドにシークレットを注入して実行(§9.2) |
 | `haj sh '<コマンド>' [引数...]` | `exec sh -c` の省略形(§9.2) |
 | `haj docs [<トピック>]` | 端末で読めるドキュメント(§9.3) |
@@ -565,6 +594,7 @@ selfupgrade.token = vault://secret/data/haj/token
    which        どの定義が効いているかを見る (--all で隠れているものも)
    selfupgrade  haj自身を更新する
    secrets      シークレット参照の展開対象を確認する (dry-run)
+   env          コマンドが読む環境変数を key=value で出す (--env-file にそのまま渡せる)
    exec         PATHのコマンドにシークレットを注入して実行する
    sh           シェルの1行をシークレットを注入して実行する (exec sh -c の省略形)
    docs         ドキュメントを読む (コマンドの作り方・仕様・ツリーの文書)

@@ -12,6 +12,8 @@ haj --secret DB_PASS=vault://secret/data/db/password mig up
 
 # key = value のファイルから(値ごとに参照/平文が混ざってよい)
 haj --env-file ./mig.env mig up
+# コマンドが --haj-env に対応していれば、雛形はコマンド自身から出せる:
+#   haj env mig > mig.env → 編集 → haj --env-file mig.env mig up
 
 # 「ファイルで渡せ」と要求するツールに(ssh鍵・kubeconfig・SA JSONなど)
 haj --secret-file KEY=vault://secret/data/ssh/id_rsa sh 'ssh -i "$KEY" host'

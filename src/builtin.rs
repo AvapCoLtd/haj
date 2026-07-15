@@ -31,6 +31,10 @@ pub const ALL: &[Builtin] = &[
         describe: "どの定義が効いているかを見る (--all で隠れているものも)",
     },
     Builtin {
+        name: "env",
+        describe: "コマンドが読む環境変数を key=value で出す (--env-file にそのまま渡せる)",
+    },
+    Builtin {
         name: "config",
         describe: "設定の実効値と出所を見る (--init で雛形を出す)",
     },
@@ -79,6 +83,17 @@ haj help [<名前>] — 使い方を表示する。
 
 一覧は各コマンドの --haj-describe を聞いて自動生成される。手で書いた一覧が
 実態とズレる、ということが起きない。"
+            .to_string(),
+
+        "env" => "\
+haj env <名前> — そのコマンドが読む環境変数を KEY=value で出す。
+
+  haj env metrics > env.txt      雛形をファイルへ
+  vi env.txt                     値を書き換える(シークレット参照も書ける)
+  haj --env-file env.txt metrics 書き換えた値で実行する
+
+中身はコマンド自身の --haj-env に聞くだけ(SPEC §4.4)。対応していない
+コマンドではエラーになる。"
             .to_string(),
 
         "commands" => "\
@@ -245,9 +260,9 @@ haj は後始末できないので消えない。
 pub fn complete(name: &str, words: &[String]) -> Vec<String> {
     match name {
         // haj help <TAB> / haj which <TAB> → コマンド名を出す
-        "help" | "which" => {
-            if !words.is_empty() && name == "help" {
-                return Vec::new(); // help は引数1つだけ
+        "help" | "which" | "env" => {
+            if !words.is_empty() && name != "which" {
+                return Vec::new(); // help / env は引数1つだけ
             }
             let mut cands: Vec<String> = Vec::new();
             if name == "which" {
