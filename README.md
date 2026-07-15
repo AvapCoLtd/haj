@@ -1,38 +1,8 @@
 # haj
 
-**h**ack **a**pplication **j**ob — プロジェクトごとに中身が変わるジョブランナー。
+**h**ack **a**pplication **j**ob — AVAP社のCLIゲートウェイ兼 JOBランナー
 
-`haj` はサブコマンドを**持たない**。そこに置いてある実行可能ファイルを**探して**実行する。
-だから、リポジトリごとに使えるコマンドが違う、という状態が自然に成立する。
-
-```console
-$ cd ~/repos/webapp && haj
- hajコマンド (haj help <名前> で詳細):
-   web        基本版(webapp)の操作
-   ie         拡張版(example-app)の操作
-   mig        DBマイグレーション (status/up/down/create/edit)
-   xdebug     Xdebugの有効/無効を切り替え
-
-$ cd ~/repos/some-other-project && haj
- hajコマンド (haj help <名前> で詳細):
-   deploy     このプロジェクトのデプロイ
-   seed       テストデータ投入
-```
-
-同じ `haj` コマンドだが、出てくるものが違う。**リポジトリに置いたコマンドだけが、
-そのリポジトリで生える。**
-
-## なぜ make / just / npm scripts ではないのか
-
-- **一覧が信用できる。** `haj help` はコマンドを1本ずつ叩いて説明を集める。手で書いた
-  一覧が実態と食い違う、ということが起こらない。
-- **補完が勝手についてくる。** サブコマンドが `--haj-complete` に答えれば、TAB 補完に
-  自動で載る。補完スクリプトを書き足す必要がない。
-- **タスクを宣言型ファイルに閉じ込めない。** 現実のタスクは分岐と冪等性判定の塊で、
-  TOML/YAML の1行には収まらない。haj のタスクは**普通の実行ファイル**なので、
-  シェルでも Rust でも PHP でも書ける。
-- **共通コマンドと固有コマンドが両立する。** 全社共通の `bao-login` は全リポジトリで
-  使えて、`deploy` はそのリポジトリでだけ生える。同名なら手前が勝つ。
+`haj` はプロジェクト/個人/共有の様々なコンテキストで実行できる内容、ドキュメントが変化する。統一的な機密情報へのプロキシを行い、取得した機密情報は揮発させ、ローカルディスクに保持しない。プロジェクト知識やLinux知識を実行可能なJob化することで実態と乖離しない備忘録や共有可能な知識にするものある。
 
 ## インストール
 
@@ -55,7 +25,7 @@ curl -fsSL https://raw.githubusercontent.com/AvapCoLtd/haj/master/install.sh | s
 cargo build --release && install -m 755 target/release/haj /usr/local/bin/haj
 ```
 
-## シェル補完
+### シェル補完の有効化
 
 ```sh
 # ~/.zshrc
@@ -68,7 +38,7 @@ eval "$(haj completion bash)"
 補完スクリプトは候補を一切持たない。`haj __complete` でコアに聞くだけなので、
 **コマンドを足しても更新は要らない**(プロジェクト固有のコマンドもそのまま候補に出る)。
 
-## 更新
+### 更新方法
 
 ```sh
 haj selfupgrade            # 最新版に入れ替える(最新なら何もしない)
@@ -88,58 +58,84 @@ selfupgrade.project_id = 123
 selfupgrade.token      = vault://<マウント>/<パス>/token   # 平文でもよい
 ```
 
-`selfupgrade.gitlab` を設定したときだけ GitLab の Package Registry を見る。トークンは
-**シークレット参照で書ける**ので、平文をディスクに置かずに済む。
-
-## 使い方
+## コマンドの実行方法
 
 ```
-haj <コマンド> [引数...]         探索して実行する
-haj                            プロジェクトと、使えるコマンドの一覧
-haj help <名前>                 そのコマンドの詳しい使い方
-haj which [--all] <名前>        どの定義が効いているかを見る
-haj commands                   一覧を機械可読で (名前 TAB パス TAB 出自 TAB 説明)
-haj docs [<トピック>]            ドキュメントを読む
-haj config [--init]            設定の実効値と出所 (--init で雛形)
-haj completion <シェル>          補完スクリプトを出す
-haj exec <プログラム> [引数...]   PATH のコマンドを実行 (シークレット注入つき)
-haj sh '<コマンド>'              シェルの1行を実行 (同上)
-haj secrets --check            何が渡るのかを解決せずに確かめる
-haj selfupgrade                haj自身を更新する
-haj --version
+haj <グローバルフラグ> <サブコマンド> <引数...
 ```
 
-グローバルフラグは**コマンド名の前**に書く(git 方式。名前より後ろはサブコマンドに素通し)。
+### 組込済サブコマンド
 
 ```
--C <ディレクトリ>                 そのディレクトリを起点に実行する (git と同じ)
---secret <名前>=<値>                       参照を展開して環境変数で渡す
---env-file <ファイル>                       key = value を読み、値を展開して渡す
---secret-file <名前|パス>=<参照|テンプレート>  値をファイルに書く (名前ならパスを環境変数へ)
+help            使い方を表示する (haj help <名前> で個別)
+commands        コマンド一覧を機械可読で出す
+which           どの定義が効いているかを見る (--all で隠れているものも)
+config          設定の実効値と出所を見る (--init で雛形を出す)
+selfupgrade     haj自身を更新する
+secrets         何が渡るのかを解決せずに確かめる (--check)
+exec            PATHのコマンドにシークレットを注入して実行する
+docs            ドキュメントを読む (コマンドの作り方・仕様・ツリーの文書)
+completion      シェル補完のスクリプトを出す (eval "$(haj completion zsh)")
+sh              シェルの1行をシークレットを注入して実行する (exec sh -c の省略形)
+tree            共有ツリーの取得と更新 (install/update/list/remove)
 ```
 
-組み込みコマンドは**どこにいても使える**ので、一覧にも TAB 補完にも常に出ます
-(探索されるコマンドとは節を分けて表示)。どこにいても打てるものが一覧に出ないのは、
-「一覧が実態と一致する」という haj の売りに反するからです。
+### グローバルフラグ
 
-## コマンドを追加する
+```
+-C <ディレクトリ>                               そのディレクトリを起点に実行する (git と同じ)
+--secret <名前>=<値>                            参照を展開して環境変数で渡す
+--env-file <ファイル>                           key = value を読み、値を展開して渡す
+--secret-file <名前|パス>=<参照|テンプレート>   値をファイルに書く (名前ならパスを環境変数へ)
+```
 
-コマンドの足し方は3通りある。**どれも登録は要らない**(置けば生える)。
+## 共有ツリー
 
-| 方式 | 置き場所 | 効く範囲 | 向いているもの |
-|---|---|---|---|
-| A. プロジェクト | `<リポジトリ>/.haj/commands/<名前>` | そのリポジトリの中だけ | チームで共有する、リポジトリ固有のタスク |
-| B. グローバル | `$PATH` の `haj-<名前>` | どこでも | 個人ツール、パッケージマネージャで配るもの |
-| C. エイリアス | `~/.config/haj/config` または `.haj/config` の `alias.<名前>` | どこでも / そのプロジェクト | 打鍵の短縮。1行の委譲(scripts 相当) |
-| D. 共有ツリー | `haj tree install <gitのURL>` | どこでも | チームでコマンド・エイリアス集を配る |
-
-### A. プロジェクトのコマンド(`.haj/commands/`)
-
-**基本形。** リポジトリにコミットすれば、チーム全員の `haj` にそのコマンドが生える。
+gitリポジトリで公開されているサブコマンドやドキュメント、エイリアスを利用できる
 
 ```sh
-mkdir -p .haj/commands
-cat > .haj/commands/deploy <<'EOF'
+haj tree install https://github.com/you/haj-tools    # 入れる(@<ref> で固定可)
+haj tree update                                      # 差分を見せてから更新
+haj tree list                                        # 導入済一覧
+haj tree remove haj-tools                            # 導入したツリーの削除
+```
+
+## コマンドのワークフロー
+
+(例) 機密情報をbao/vaultに補完している場合
+
+1. 設定を行う (~/.config/haj/config)
+
+機密情報を扱いたい場合接続先のvaultパスを追加する。
+vaultでなくコンソールの1passwordなどであれば不要
+
+```
+secrets.vault_cmd = bao
+secrets.vault_addr = https://(baoのアドレス)
+secrets.vault_login = -method=oidc -path=(baoの認証パス)
+```
+
+2. 個人用エイリアスを作る (~/.config/haj/config)
+
+設定ファイルに記載する。コマンドが複数行になる場合バックスラッシュで改行をエスケープする。
+.descを設定すると、その内容がhelpにでる
+
+```
+alias.hello = echo hi hoge
+alias.hello.desc = テスト用
+```
+
+```console
+$ haj hello
+hi hoge
+```
+
+3. エイリアスで書くのが辛くなってきたらコマンドを作る
+
+~/.config/haj/commands に規定のオプションで応答するようにコマンドを書く
+
+```
+cat > ~/.config/haj/commands/deploy <<EOF
 #!/bin/bash
 set -euo pipefail
 
@@ -152,326 +148,72 @@ esac
 
 echo "==> ${HAJ_PROJECT}: ${1:?環境を指定してください} へデプロイします"
 EOF
-chmod +x .haj/commands/deploy
+chmod +x ~/.config/haj/commands/deploy
 ```
 
 ```console
-$ haj                       # 一覧に説明が出る
-   deploy     本番へデプロイする   [example-app]
-$ haj deploy <TAB>          # staging / production が補完される
 $ haj deploy staging
-==> example-app: staging へデプロイします
+==> example-app: stagingへデプロイします
 ```
 
-**ヘルプにも補完にも1行も書き足していない。** コアがコマンド自身に聞いているから。
+4. 同様に、プロジェクトルートに書く場合
 
-### B. グローバルなコマンド(`$PATH` の `haj-<名前>`)
+<REPO ROOT>/.haj/{config,commands}を対象に同様に行う。
 
-`$PATH` に `haj-<名前>` という実行可能ファイルを置くと、どのディレクトリでも
-`haj <名前>` で呼べる(git が `git-foo` を `git foo` にするのと同じ)。
+
+## エイリアス設定例
+
+
+### 機密情報を残さずにociコマンドを実行
+
+```
+alias.oci = --secret OCI_CLI_USER=vault://users/hajime/oci/user \
+            --secret OCI_CLI_TENANCY=vault://users/hajime/oci/tenancy \
+            --secret OCI_CLI_FINGERPRINT=vault://users/hajime/oci/fingerprint \
+            --secret OCI_CLI_REGION=vault://users/hajime/oci/region \
+            --secret-file OCI_CLI_KEY_FILE=vault://users/hajime/oci/private_key \
+            exec oci
+alias.oci.desc = OCI CLI を bao の資格情報で起動する
+```
+
+### 機密情報を残さずにglabコマンドを実行
+
+```
+alias.glab = --secret-file GLAB_CONFIG_DIR/config.yml=~/.config/glab-cli/config.yml.tpl \
+            exec glab
+alias.glab.desc = glab を bao の資格情報で起動する
+```
+
+### 存在を隠蔽する
+
+素の `glab` / `oci` を打っても haj 経由(=認証情報非保持)になるようにラップする。
+
+自分のシェルだけでよければ zshrc / bashrc に:
 
 ```sh
-cat > ~/bin/haj-scratch <<'EOF'
+alias glab='haj glab'
+alias oci='haj oci'
+```
+
+シェルの alias は対話シェルにしか効かない。Lens のように**バイナリを直接実行する
+アプリケーション**にも効かせるには、PATH の先頭側にシムを置く:
+
+```sh
+cat > ~/bin/glab <<'EOF'
 #!/bin/sh
-case "${1:-}" in
-  --haj-describe) echo "作業用の一時ディレクトリを作って cd する"; exit 0 ;;
-esac
-mktemp -d /tmp/scratch.XXXXXX
+exec haj glab "$@"
 EOF
-chmod +x ~/bin/haj-scratch
+chmod +x ~/bin/glab
 ```
 
-```console
-$ haj scratch
-/tmp/scratch.a1B2c3
-```
 
-- 探索の**最後**なので、プロジェクトの同名コマンドには負ける(意図どおり)
-- **`HAJ_ROOT` は渡されない**(属するツリーが無い)。共通ライブラリに依存せず自己完結で書く
-- 規約フックは同じように効く。実装すれば一覧にも補完にも出る
-- 個人用に置くだけなら `~/.config/haj/commands/<名前>` でもよい(こちらは `haj-` 接頭辞が不要)
-
-### C. エイリアス(`alias.<名前>`)
-
-**新しい実行ファイルは作らず、語の並びに展開する**(git の alias と同じ)。
+## もっと知る
 
 ```sh
-haj config --init > ~/.config/haj/config   # まだ無ければ雛形を出す
+haj docs    # 使い方ガイドと仕様の全文が端末で読める(fzfがあれば選んで読める)
 ```
 
-```
-# ~/.config/haj/config
-alias.web = -C ~/repos/webapp
-alias.wm  = -C ~/repos/webapp mig
+## 開発情報
 
-# 長いものは行末の \ で継続。説明は .desc に書ける(一覧と補完に出る)
-alias.oci = --secret OCI_CLI_USER=vault://users/me/oci/user \
-            --secret OCI_CLI_TENANCY=vault://users/me/oci/tenancy \
-            --secret-file OCI_CLI_KEY_FILE=vault://users/me/oci/private_key \
-            exec oci
-alias.oci.desc = OCI CLI を金庫の資格情報で起動する
-```
-
-```console
-$ haj web help          # → haj -C ~/repos/webapp help   (そのプロジェクトの一覧)
-$ haj web deploy prod   # → haj -C ~/repos/webapp deploy prod
-$ haj wm up             # → haj -C ~/repos/webapp mig up
-```
-
-- 展開は**1回だけ**(再帰しない)。残りの引数は後ろに繋がる
-- 優先順位は **組み込み > エイリアス > 探索**(`alias.help` のような予約語は無視される)
-- `haj which <名前>` で展開と出自を確認でき、`haj` の一覧にもエイリアスの節が出る
-- **補完も効く。** `haj web <TAB>` は移動先のプロジェクトのコマンドを補完し、
-  `haj oci <TAB>` は `oci` 自身の補完に委譲される(`haj exec kubectl <TAB>` も同様)
-
-#### プロジェクト・エイリアス(`.haj/config` に書く)
-
-package.json の `scripts` に相当する「1行の委譲」は、リポジトリの `.haj/config` にも
-書ける。そのプロジェクトの中でだけ有効で、同名ならユーザー設定より**近い方が勝つ**。
-
-```
-# .haj/config
-name = myapp
-alias.test = exec docker compose exec app vendor/bin/phpunit --testdox
-alias.test.desc = テストを流す(コンテナ内)
-```
-
-```console
-$ cd ~/repos/myapp
-$ haj test        # → docker compose exec app vendor/bin/phpunit --testdox
-```
-
-**境界規則**: 1行で書けなくなったら `.haj/commands/` の実行ファイルに昇格する。
-委譲は宣言、ロジックはファイル(haj はタスクランナーを作らない)。
-
-### D. 共有ツリー(`haj tree`)
-
-コマンドのツリーを git リポジトリで配る。clone したディレクトリが探索に乗るだけで、
-パッケージマネージャではない。
-
-```sh
-haj tree install https://github.com/you/haj-tools    # 入れる(@<ref> で固定可)
-haj tree update                                       # 差分を見せてから更新
-haj tree list
-haj tree remove haj-tools
-```
-
-イメージに焼くなら `--global`(`/usr/local/share/haj/trees` に入る):
-
-```dockerfile
-RUN haj tree install --global https://github.com/you/haj-tools
-```
-
-リポジトリの形は2つ(`.haj/` があればそれ、無ければルートがツリー):
-ルート直下に `config` + `commands/` + `docs/` を置く配布専用の形と、
-`.haj/` を持つ普通の haj プロジェクトをそのまま入れる形。`config` の
-`alias.*` も効くので、**エイリアス集だけの配布**もできる。
-一覧には `[<ツリー名>]` として出る。
-
-### 規約(A / B に共通)
-
-コアはコマンドの中身を知らない。知りたいことは**コマンド自身に聞く**。
-
-| 引数 | 返すもの | |
-|---|---|---|
-| `--haj-describe` | 一行説明 | 必須。`haj` の一覧に使う |
-| `--haj-help` | 詳しい使い方 | 任意。`haj help <名前>` |
-| `--haj-complete <入力済みの語...>` | 補完候補(改行区切り) | 任意。TAB補完 |
-
-コアが渡す環境変数:
-
-| 変数 | 意味 |
-|---|---|
-| `HAJ_ROOT` | そのコマンドが属するツリー。共通ライブラリは `. "$HAJ_ROOT/lib/common.sh"` |
-| `HAJ_NAME` | 呼ばれた名前 |
-| `HAJ_PROJECT` / `HAJ_PROJECT_DIR` | いま操作対象のプロジェクト。**破壊的なコマンドは対象を名乗ること** |
-
-**規約フックは共通ライブラリを読む前に処理すること。** 説明文を1行返すためだけに
-重い初期化をすると、TAB のたびにその分だけ待たされる(フックは2秒で打ち切られる)。
-
-より詳しくは `haj docs writing-commands`(端末で読める)。契約の全文は [SPEC.md](SPEC.md)。
-
-## 探索順
-
-先に見つかったものが勝つ。
-
-| 順 | 場所 | 用途 |
-|---|---|---|
-| 1 | カレントから上へ辿った `.haj/commands/<名前>` | プロジェクト固有 |
-| 2 | `~/.config/haj/commands/<名前>` | 個人用 |
-| 3 | `$HAJ_COMMAND_PATH`(既定 `/usr/local/lib/haj/commands`) | 全社/イメージ共通 |
-| 4 | `$PATH` の `haj-<名前>` | git 方式の逃げ道 |
-
-## `.haj` は壁である
-
-**1 の遡上は `/` までは行かない。`.haj` を持つディレクトリで止まる。**
-
-止めないと、誰かが `~/repos/.haj/commands/setup` を置いただけで、その配下の**全リポジトリ**に
-`haj setup` が生えてしまう。置いた本人以外は気づけない。`setup` や `reset` は破壊的なので、
-これは事故になる。
-
-境界と名前は `.haj/config` で宣言する(**無くてもよい**。既定で「境界」かつ「名前は
-ディレクトリ名」)。
-
-```
-name = example-app
-root = true      # 既定。false にすると親の .haj も探しに行く(モノレポ用)
-```
-
-継承は常にオプトインなので、**知らないうちに上流のコマンドが効くことはない**。
-
-## どのプロジェクトの setup が走るのか
-
-同じ `haj setup` がプロジェクトごとに違う挙動をする以上、いまどれが効いているのかが
-見えないこと自体が欠陥です。3つの方法で常に見えるようにしてあります。
-
-```console
-$ haj
- プロジェクト: webapp  (~/repos/example-app/web/webapp)
-
- hajコマンド (haj help <名前> で詳細):
-   bao-login  Vaultにログイン           [共通]
-   mig        DBマイグレーション          [example-app]
-   setup      webapp のセットアップ   [webapp]
-
-$ haj which --all setup
-* ~/repos/example-app/web/webapp/.haj/commands/setup  [webapp]
-  ~/repos/example-app/.haj/commands/setup                 [example-app]
-  /usr/local/lib/haj/commands/setup                              [共通]
-
-(* が実行されるもの。他は隠れている)
-```
-
-さらにコアは **`HAJ_PROJECT` / `HAJ_PROJECT_DIR`** を渡すので、破壊的なコマンドは
-対象を名乗れます。
-
-```sh
-echo "==> ${HAJ_PROJECT}: セットアップします"
-```
-
-`HAJ_ROOT`(そのコマンドがどこから来たか)と `HAJ_PROJECT`(いまどこに対して実行して
-いるか)は**別物**です。共通の `mig` をプロジェクトの中で叩けば前者は `/usr/local/lib/haj`、
-後者は `example-app` になります。
-
-## 設定
-
-**git と同じ形**です。リポジトリ側は `.haj/`(git の `.git/`)、ユーザー側は
-`~/.config/haj/`(git の `~/.config/git/config`)。
-
-| 何 | 場所 |
-|---|---|
-| ユーザー設定 | `~/.config/haj/config` |
-| 個人用コマンド | `~/.config/haj/commands/` |
-| プロジェクト設定 | `<リポジトリ>/.haj/config` |
-| キャッシュ | `~/.cache/haj/` |
-
-形式は `.haj/config` と**同じ** `key = value`(`#` から行末はコメント、行末の `\` は継続)。
-設定ファイルの形式が2つあると「どっちがどっちだったか」を覚える羽目になるので、
-1つに揃えています。
-
-```
-# ~/.config/haj/config
-# 鍵は git と同じドット記法(selfupgrade.* / secrets.* / ドット無しはコア)
-secrets.vault_cmd  = bao                        # OpenBao を使うなら
-secrets.vault_addr = https://vault.example.com
-secrets.vault_login = -method=oidc              # 未ログイン時に自動ログイン
-
-hook_timeout_ms = 2000
-```
-
-雛形は `haj config --init > ~/.config/haj/config` で出せます。
-
-長いエイリアスは**行末の `\` で継続**できます(シェルと同じ)。
-
-```
-alias.oci = --secret OCI_CLI_USER=vault://users/me/oci/user \
-            --secret OCI_CLI_TENANCY=vault://users/me/oci/tenancy \
-            --secret-file OCI_CLI_KEY_FILE=vault://users/me/oci/private_key \
-            exec oci
-```
-
-```console
-$ haj oci iam region list     # ↑に展開されて、残りの引数が oci に渡る
-```
-
-値は **環境変数 > 設定ファイル > 既定値** の順で決まります。この3段が見えないと
-「なぜ効かないのか」を調べる手段が無くなるので、`haj config` が**実効値と一緒に
-出所を出します**(`haj which` が探索順を見せるのと同じ理由)。
-
-```console
-$ haj config
-設定ファイル: /home/kurari/.config/haj/config
-
-  command_path            /usr/local/lib/haj/commands   (既定値)
-  hook_timeout_ms         5000                          (設定ファイル)
-
-  secrets.vault_cmd       bao                           (設定ファイル)
-  secrets.vault_addr      https://vault.example.com     (設定ファイル)
-
-  selfupgrade.github      AvapCoLtd/haj                 (既定値)
-  selfupgrade.token       (未設定)
-```
-
-`selfupgrade.token` は値を出しません(シェルの履歴やスクリーンショットに残るため)。
-設定されているかと、どこから来たかだけを示します。ただし**シークレット参照**なら
-参照そのものを出します(参照は秘密ではないし、どこの金庫を指しているかは調べたい情報)。
-
-### シークレット
-
-値の実体ではなく**参照**を書ける。haj が exec の直前に解決して渡す。
-
-```sh
-haj --secret DB_PASS=vault://secret/data/db/password mig up
-haj --env-file ./mig.env mig up                     # key = value のファイルから
-haj --secret-file KEY=vault://secret/data/ssh/id_rsa sh 'ssh -i "$KEY" host'  # ファイルで渡す
-```
-
-**渡すものと相手は、人がその実行時に明示する。** haj が環境変数を勝手に走査して
-展開することはない(DB パスワードを必要としないコマンドに実体が渡ったり、信頼して
-いないリポジトリのコマンドに届いたりしないため)。
-
-何が渡るのかは、**金庫に触らずに**確認できる:
-
-```console
-$ haj --secret DB_PASS=vault://secret/data/db/password --env-file ./mig.env secrets --check
- 実行時に渡るもの (値は解決していません):
-   --secret    DB_PASS               → vault://secret/data/db/password
-   --env-file  DB_HOST                 db.internal
-   --env-file  DB_USER               → vault://secret/data/db/user
-```
-
-書式は発明していない — 1Password は `op inject`、Vault は vault-agent template の
-展開式をそのまま受ける(`vault://<パス>/<フィールド>` の短縮形も可)。解決に失敗したら
-**コマンドは実行されない**(fail-fast)。詳しくは `haj docs spec` の §10。
-
-## ディレクトリ構成(ツリー)
-
-```
-<ツリー>/
-  commands/          ← 実行可能ファイルを置く。ここにある名前がコマンドになる
-    mig
-    deploy
-  lib/               ← 共通ライブラリ。$HAJ_ROOT/lib/... で読める
-    common.sh
-  help.header        ← haj help の先頭に出す固定文(任意)
-  help.footer        ← haj help の末尾に出す固定文(任意)
-```
-
-`haj help` は **header + 自動生成のコマンド一覧 + footer** を出す。
-コマンド一覧を手で書かないこと。
-
-例は [examples/](examples/) にある。
-
-## ドキュメント
-
-| どこで | 何が |
-|---|---|
-| `haj docs writing-commands` | コマンドの作り方(端末で読める) |
-| `haj docs spec` | コアとサブコマンドの契約の全文 |
-| [SPEC.md](SPEC.md) | 同上(リポジトリ版) |
-| [examples/](examples/) | 規約フックまで実装した実物 |
-| [CONTRIBUTING.md](CONTRIBUTING.md) | 開発・テスト・リリースの手順 |
-
-## ライセンス
-
-MIT
+- https://github.com/AvapCoLtd/haj (公開用)
+- https://gitlab.avaper.day/avap/haj/haj (開発用)

@@ -457,6 +457,10 @@ fn print_help(topic: Option<&str>) {
         println!("\n プロジェクト: {}  ({})", p.name, p.dir.display());
     }
 
+    // docs の入口を冒頭で示す(SPEC §5)。「haj自身」の一覧の中に埋もれると、
+    // ドキュメントがあること自体に気づけない。
+    println!("\n ドキュメント: haj docs  (一覧から選んで読む。fzfがあれば選択UI)");
+
     let mut cache = DescribeCache::load();
     let cmds = discovery::list();
 
