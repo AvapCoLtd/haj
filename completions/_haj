@@ -89,8 +89,19 @@ _haj() {
     return
   fi
 
-  (( ${#cands} )) || return 1
-  _describe -t values "haj ${words[i]}" cands
+  # "名前<TAB>説明" の行は説明つき候補として出す(`haj run <TAB>` のタスク一覧など)。
+  # タブが無ければ素の候補のまま。
+  local -a described
+  for line in $cands; do
+    if [[ $line == *$'\t'* ]]; then
+      described+=("${line%%$'\t'*}:${line#*$'\t'}")
+    else
+      described+=("$line")
+    fi
+  done
+
+  (( ${#described} )) || return 1
+  _describe -t values "haj ${words[i]}" described
 }
 
 # fpath に置かれた場合(#compdef 経由の autoload)は補完関数として呼ばれる。

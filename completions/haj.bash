@@ -40,9 +40,10 @@ _haj_complete() {
       *)  cands="$(haj __complete "${COMP_WORDS[@]:1:COMP_CWORD-1}" 2>/dev/null | cut -f1)" ;;
     esac
   else
-    # サブコマンド以降。入力済みの語を(フラグ込みで)素通しで core へ
+    # サブコマンド以降。入力済みの語を(フラグ込みで)素通しで core へ。
+    # bashは説明文を表示できないので、"名前<TAB>説明" の行は名前だけ使う
     local words=("${COMP_WORDS[@]:1:COMP_CWORD-1}")
-    cands="$(haj __complete "${words[@]}" 2>/dev/null)"
+    cands="$(haj __complete "${words[@]}" 2>/dev/null | cut -f1)"
     # 丸括弧だけの説明行は候補ではない(SPEC.md 4.3)
     case "$cands" in
       \(*\)) return 0 ;;

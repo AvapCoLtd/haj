@@ -35,6 +35,10 @@ pub const ALL: &[Builtin] = &[
         describe: "コマンドが読む環境変数を key=value で出す (--env-file にそのまま渡せる)",
     },
     Builtin {
+        name: "run",
+        describe: "プロジェクトのタスクを実行する (引数なしで一覧)",
+    },
+    Builtin {
         name: "config",
         describe: "設定の実効値と出所を見る (--init で雛形を出す)",
     },
@@ -94,6 +98,28 @@ haj env <名前> — そのコマンドが読む環境変数を KEY=value で出
 
 中身はコマンド自身の --haj-env に聞くだけ(SPEC §4.4)。対応していない
 コマンドではエラーになる。"
+            .to_string(),
+
+        "run" => "\
+haj run [<名前>] [引数...] — プロジェクトのタスクを実行する (SPEC §9.6)。
+
+  haj run             このプロジェクトのタスク一覧
+  haj run test        タスクを実行 (以降の引数はそのまま渡る)
+
+タスクは install / build / test のような「このリポジトリの作業」。コマンド (語彙) と
+違って探索に乗らない — 見るのは現在のプロジェクトの .haj/config の task.<名前>
+(1行の委譲。エイリアスと同じ展開規則) と .haj/tasks/<名前> (実行ファイル) だけ。
+遡らない・上書きしない・フォールバックしない。だから haj run x という1行は、
+どの環境で読んでも「そのリポジトリのタスク」以外に解釈できない。
+
+  # .haj/config
+  task.test = exec docker compose exec app vendor/bin/phpunit
+  task.test.desc = テストを流す (コンテナ内)
+
+1行で書けなくなったら .haj/tasks/ の実行ファイルに昇格する (規約フックは
+コマンドと同じ: --haj-describe / --haj-help / --haj-complete / --haj-env)。
+使い方は haj help run <名前>、環境変数は haj env run <名前>、
+効いている定義は haj which run <名前> で確かめられる。"
             .to_string(),
 
         "commands" => "\
@@ -261,6 +287,16 @@ pub fn complete(name: &str, words: &[String]) -> Vec<String> {
     match name {
         // haj help <TAB> / haj which <TAB> → コマンド名を出す
         "help" | "which" | "env" => {
+            // 合成形 (SPEC §9.6): haj help run <TAB> / haj env run <TAB> → タスク名
+            if words.first().map(String::as_str) == Some("run") {
+                if words.len() == 1 {
+                    return crate::tasks::list()
+                        .into_iter()
+                        .map(|t| t.name().to_string())
+                        .collect();
+                }
+                return Vec::new();
+            }
             if !words.is_empty() && name != "which" {
                 return Vec::new(); // help / env は引数1つだけ
             }
@@ -288,6 +324,18 @@ pub fn complete(name: &str, words: &[String]) -> Vec<String> {
         "config" => {
             if words.is_empty() {
                 vec!["--init".to_string()]
+            } else {
+                Vec::new()
+            }
+        }
+        // 通常は main::complete が run を先に処理する。ここに来るのは展開済みの
+        // 結果がまた run だった場合などの縁 — タスク名を出すだけにする。
+        "run" => {
+            if words.is_empty() {
+                crate::tasks::list()
+                    .into_iter()
+                    .map(|t| t.name().to_string())
+                    .collect()
             } else {
                 Vec::new()
             }

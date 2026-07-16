@@ -17,6 +17,7 @@ mod docs;
 mod project;
 mod secrets;
 mod selfupgrade;
+mod tasks;
 mod tree;
 
 use std::io::Write;
@@ -35,6 +36,7 @@ fn main() {
 
     let mut deliveries: Vec<secrets::Delivery> = Vec::new();
     let mut alias_expanded = false;
+    let mut task_expanded = false;
 
     // グローバルフラグの解釈と、エイリアス展開(SPEC §2.7)。
     // エイリアスは名前の位置で**1回だけ**語の並びに置き換わり(再帰しない)、
@@ -76,7 +78,7 @@ fn main() {
                     ));
                 }
                 // 素の `haj` はヘルプ。何も分からない状態で来た人に一覧を見せるのが親切。
-                print_help(None);
+                print_help(&[]);
                 std::process::exit(0);
             }
             Some((n, r)) => {
@@ -93,6 +95,24 @@ fn main() {
                         continue; // フラグから解釈し直す
                     }
                 }
+                // タスクの1行宣言(task.* — SPEC §9.6)も同じ機構で展開する。
+                // 展開はエイリアスとタスクで各1回だけ(フラグは別) —
+                // `alias.t = run test` は動くが、`task.a = run b` の b の宣言は
+                // 再展開しない(エイリアスの「再帰しない」と同じ規則)。
+                if !task_expanded && n == "run" {
+                    if let Some((task_name, task_rest)) = r.split_first() {
+                        if let Some(tasks::Task::Decl { expansion, .. }) =
+                            tasks::lookup_decl(task_name)
+                        {
+                            task_expanded = true;
+                            let mut expanded: Vec<String> =
+                                expansion.split_whitespace().map(str::to_string).collect();
+                            expanded.extend(task_rest.iter().cloned());
+                            args = expanded;
+                            continue; // フラグから解釈し直す
+                        }
+                    }
+                }
                 break (n.to_string(), r.to_vec());
             }
         }
@@ -103,7 +123,7 @@ fn main() {
     // 受け渡しフラグは「本体を実行する」ときと、その dry-run のときにだけ意味がある。
     // それ以外の組み込みに続けて書かれたら使い方の誤り(SPEC §10.2)。
     if !deliveries.is_empty()
-        && !matches!(name, "exec" | "sh" | "secrets")
+        && !matches!(name, "exec" | "sh" | "secrets" | "run")
         && (discovery::is_reserved(name) || name.starts_with('-'))
     {
         die(&format!(
@@ -116,8 +136,12 @@ fn main() {
         "exec" => exec_external(rest, &deliveries),
         // exec sh -c の省略形。シェルの変数展開($VAR)を1語で使えるように。
         "sh" => exec_shell(rest, &deliveries),
+        // プロジェクトのタスク(SPEC §9.6)。探索しない・上書きしない・フォールバックしない。
+        // 1行宣言(task.*)は上の展開ループが処理済みなので、ここに来るのは
+        // 実行ファイルのタスクと一覧。
+        "run" => run_task(rest, &deliveries),
         "-h" | "--help" | "help" => {
-            print_help(rest.first().map(String::as_str));
+            print_help(rest);
             std::process::exit(0);
         }
         "-V" | "--version" => {
@@ -147,8 +171,12 @@ fn main() {
         // 「どの環境変数を読むのか」はコマンドの中身の知識なので、コアは聞くだけ。SPEC §4.4。
         "env" => {
             let Some(target) = rest.first() else {
-                die("使い方: haj env <コマンド>");
+                die("使い方: haj env <コマンド> / haj env run <タスク>");
             };
+            // タスク(SPEC §9.6): haj env run <名前> — --haj-env の中継はコマンドと同じ
+            if target == "run" {
+                task_env(rest.get(1).map(String::as_str));
+            }
             let Some(cmd) = discovery::resolve(target) else {
                 eprintln!("haj: 未知のコマンドです: {target}");
                 std::process::exit(1);
@@ -207,9 +235,15 @@ fn main() {
         std::process::exit(127); // シェルの「command not found」に合わせる
     };
 
-    // exec で自分を置き換える。ラッパープロセスを残さないので、シグナルも
-    // 終了コードもサブコマンドのものがそのまま呼び出し元に伝わる。
-    let mut proc = prepare_proc(&cmd.path, rest, &deliveries);
+    exec_command(&cmd, rest, &deliveries)
+}
+
+/// 見つかったコマンド/タスクを exec(2) で実行する(戻らない)。
+///
+/// exec で自分を置き換える。ラッパープロセスを残さないので、シグナルも
+/// 終了コードもサブコマンドのものがそのまま呼び出し元に伝わる。
+fn exec_command(cmd: &Command, rest: &[String], deliveries: &[secrets::Delivery]) -> ! {
+    let mut proc = prepare_proc(&cmd.path, rest, deliveries);
 
     proc.env("HAJ_NAME", &cmd.name);
     match &cmd.root {
@@ -238,6 +272,107 @@ fn main() {
         }
     }
     std::process::exit(126); // 「見つかったが実行できない」
+}
+
+/// `haj run [<名前>] [引数...]`(SPEC §9.6)— プロジェクトのタスク。
+///
+/// 見るのは現在のプロジェクトの `.haj/tasks/<名前>` だけ(1行宣言 task.* は
+/// main の展開ループが処理済み)。探索に乗せない・素の名前と重ねない・
+/// フォールバックしない — この制約が「haj run x はそのリポジトリのタスク以外に
+/// 解釈できない」という保証になる。
+fn run_task(args: &[String], deliveries: &[secrets::Delivery]) -> ! {
+    if tasks::project_haj().is_none() {
+        die("run: プロジェクトの外です (.haj が見つかりません)");
+    }
+    let Some((name, rest)) = args.split_first() else {
+        list_tasks();
+    };
+    let Some(cmd) = tasks::lookup_file(name) else {
+        // 宣言(task.*)がここまで来るのは、展開済みの結果がまた `run <宣言>` だった
+        // 場合だけ(展開は1回 — エイリアスの「再帰しない」と同じ規則)。
+        if tasks::lookup_decl(name).is_some() {
+            eprintln!("haj: タスクの展開は1回だけです: {name} (task.* から task.* へは繋げない)");
+        } else if discovery::resolve(name).is_some() || aliases::lookup(name).is_some() {
+            eprintln!(
+                "haj: {name} はタスクではありません。コマンドとして定義されています: haj {name}"
+            );
+        } else {
+            eprintln!("haj: 未知のタスクです: {name} (haj run で一覧)");
+        }
+        std::process::exit(127);
+    };
+    exec_command(&cmd, rest, deliveries)
+}
+
+/// `haj run`(引数なし)— タスクの一覧。npm run と同じ振る舞い。
+fn list_tasks() -> ! {
+    let ts = tasks::list();
+    if ts.is_empty() {
+        println!("このプロジェクトのタスクはありません。");
+        println!(
+            "  置き場所: .haj/tasks/<名前> (実行ファイル) / .haj/config の task.<名前> (1行の委譲)"
+        );
+        std::process::exit(0);
+    }
+    if let Some(p) = discovery::active_project() {
+        println!(" プロジェクト: {}  ({})", p.name, p.dir.display());
+    }
+    println!("\n タスク (haj run <名前> で実行):");
+    let mut cache = DescribeCache::load();
+    let width = ts.iter().map(|t| t.name().len()).max().unwrap_or(8);
+    for t in &ts {
+        println!(
+            "   {:width$}  {}",
+            t.name(),
+            task_summary(&mut cache, t),
+            width = width
+        );
+    }
+    cache.save();
+    std::process::exit(0);
+}
+
+/// タスクの一行説明。宣言は .desc か展開そのもの、ファイルは --haj-describe(キャッシュ経由)。
+fn task_summary(cache: &mut DescribeCache, t: &tasks::Task) -> String {
+    match t {
+        tasks::Task::Decl {
+            expansion, desc, ..
+        } => match desc {
+            Some(d) => d.clone(),
+            None => aliases::expansion_summary(expansion),
+        },
+        tasks::Task::File(cmd) => describe(cache, cmd).unwrap_or_default(),
+    }
+}
+
+/// `haj env run <名前>`(SPEC §9.6)。
+fn task_env(name: Option<&str>) -> ! {
+    let Some(name) = name else {
+        die("使い方: haj env run <タスク>");
+    };
+    match tasks::lookup(name) {
+        Some(tasks::Task::File(cmd)) => match contract::env_vars(&cmd) {
+            Some(v) => println!("{v}"),
+            None => {
+                eprintln!(
+                    "haj: {name} は --haj-env に対応していません ({})",
+                    cmd.path.display()
+                );
+                std::process::exit(1);
+            }
+        },
+        Some(tasks::Task::Decl { expansion, .. }) => {
+            eprintln!(
+                "haj: task.{name} は1行の宣言です (= {expansion})。環境変数は展開先に聞くこと"
+            );
+            std::process::exit(1);
+        }
+        None => {
+            eprintln!("haj: 未知のタスクです: {name}");
+            std::process::exit(1);
+        }
+    }
+    std::process::exit(0);
 }
 
 /// 先頭の `~` を HOME に展開する。設定ファイル由来のエイリアス展開には
@@ -403,8 +538,17 @@ fn describe(cache: &mut DescribeCache, cmd: &Command) -> Option<String> {
 /// 探索順が cwd に依存する以上、これが無いと調べようがない。
 fn which(args: &[String]) -> ! {
     let all = args.iter().any(|a| a == "--all" || a == "-a");
+
+    // タスク(SPEC §9.6): haj which run <名前> — 効いている定義(宣言かファイル)を見せる
+    let non_flags: Vec<&String> = args.iter().filter(|a| !a.starts_with('-')).collect();
+    if non_flags.first().map(|s| s.as_str()) == Some("run") {
+        if let Some(tname) = non_flags.get(1) {
+            task_which(tname, all);
+        }
+    }
+
     let Some(target) = args.iter().find(|a| !a.starts_with('-')) else {
-        eprintln!("haj: 使い方: haj which [--all] <コマンド名>");
+        eprintln!("haj: 使い方: haj which [--all] <コマンド名> / haj which run <タスク>");
         std::process::exit(1);
     };
 
@@ -441,13 +585,51 @@ fn which(args: &[String]) -> ! {
     std::process::exit(0);
 }
 
+/// `haj which run <名前>`(SPEC §9.6)— タスクの効いている定義を見せる。
+/// 同名が宣言(task.*)とファイル(tasks/)の両方にあれば宣言が勝つ。
+fn task_which(name: &str, all: bool) -> ! {
+    let decl = tasks::lookup_decl(name);
+    let file = tasks::lookup_file(name);
+    if decl.is_none() && file.is_none() {
+        eprintln!("haj: 未知のタスクです: {name}");
+        std::process::exit(1);
+    }
+
+    if let Some(tasks::Task::Decl { expansion, .. }) = &decl {
+        if !all {
+            println!("task.{name} = {expansion}");
+            std::process::exit(0);
+        }
+        println!("* task.{name} = {expansion}");
+    }
+    if let Some(cmd) = &file {
+        if !all {
+            println!("{}", cmd.path.display());
+            std::process::exit(0);
+        }
+        let mark = if decl.is_none() { "*" } else { " " };
+        println!("{mark} {} {}", cmd.path.display(), cmd.origin.label());
+    }
+    if all && decl.is_some() && file.is_some() {
+        println!("\n(* が実行されるもの。他は隠れている)");
+    }
+    std::process::exit(0);
+}
+
 /// `haj help` / `haj help <名前>`
 ///
 /// コマンド一覧は --haj-describe を全コマンドに聞いて自動生成する。
 /// 前後の固定文だけ help.header / help.footer から読む。コマンドを足しても
 /// ヘルプを書き足す必要がない、というのがこの設計の主眼。
-fn print_help(topic: Option<&str>) {
-    if let Some(topic) = topic {
+fn print_help(args: &[String]) {
+    if let Some(topic) = args.first().map(String::as_str) {
+        // タスクの使い方(SPEC §9.6): haj help run <名前>
+        if topic == "run" {
+            if let Some(tname) = args.get(1) {
+                print_task_help(tname);
+                return;
+            }
+        }
         // 組み込みは探索の対象ではないので、先に見る
         if let Some(h) = builtin::long_help(topic) {
             println!("{h}");
@@ -518,6 +700,26 @@ fn print_help(topic: Option<&str>) {
             );
         }
     }
+    // プロジェクトのタスク(SPEC §9.6)。呼べる名前である以上、一覧から漏らさない。
+    // 出自は常にこのプロジェクトなので、ラベルは節の見出しが兼ねる。
+    let ts = tasks::list();
+    if !ts.is_empty() {
+        println!("\n プロジェクトのタスク (haj run <名前> で実行):");
+        let twidth = ts
+            .iter()
+            .map(|t| t.name().len())
+            .max()
+            .unwrap_or(0)
+            .max(width);
+        for t in &ts {
+            println!(
+                "   {:twidth$}  {}",
+                t.name(),
+                task_summary(&mut cache, t),
+                twidth = twidth
+            );
+        }
+    }
     cache.save();
 
     // 組み込みはどこにいても使える。探索されないからといって一覧から漏らすと、
@@ -564,6 +766,33 @@ fn print_help(topic: Option<&str>) {
         print!("{footer}");
     }
     let _ = std::io::stdout().flush();
+}
+
+/// `haj help run <名前>`(SPEC §9.6)— タスクの使い方。
+/// 宣言は展開そのものが使い方(which と同じ見せ方)、ファイルは --haj-help に聞く。
+fn print_task_help(name: &str) {
+    match tasks::lookup(name) {
+        Some(tasks::Task::Decl {
+            expansion, desc, ..
+        }) => {
+            if let Some(d) = desc {
+                println!("{d}");
+            }
+            println!("task.{name} = {expansion}");
+        }
+        Some(tasks::Task::File(cmd)) => match contract::long_help(&cmd) {
+            Some(h) => println!("{h}"),
+            None => println!(
+                "{} には使い方の説明がありません ({})",
+                cmd.name,
+                cmd.path.display()
+            ),
+        },
+        None => {
+            eprintln!("haj: 未知のタスクです: {name}");
+            std::process::exit(1);
+        }
+    }
 }
 
 fn print_usage() {
@@ -644,36 +873,46 @@ fn complete(args: &[String]) {
 
     // エイリアスなら展開して、実効コマンドの補完に回す(SPEC §6)。
     // 展開しないと `haj oci <TAB>` のようなエイリアスで補完が死ぬ。
-    let (name, words): (String, Vec<String>) = match aliases::lookup(name) {
-        Some(a) => {
-            let argv: Vec<String> = a.expansion.split_whitespace().map(str::to_string).collect();
-            let mut i = 0;
-            while i < argv.len() {
-                match argv[i].as_str() {
-                    // -C は実際に移動する。移動先のコマンドを補完するため
-                    // (`alias.pj = -C ~/repos/x` の `haj pj <TAB>`)。
-                    "-C" => {
-                        if let Some(dir) = argv.get(i + 1) {
-                            let _ = std::env::set_current_dir(expand_home(dir));
-                        }
-                        i += 2;
-                    }
-                    "--secret" | "--env-file" | "--secret-file" => i += 2,
-                    _ => break,
-                }
-            }
-            let mut rest: Vec<String> = argv[i.min(argv.len())..].to_vec();
-            if rest.is_empty() {
+    let (mut name, mut words): (String, Vec<String>) = match aliases::lookup(name) {
+        Some(a) => match split_expansion(&a.expansion, words) {
+            Some(nw) => nw,
+            None => {
                 // フラグだけのエイリアス(-C など)。移動先のコマンド一覧を出す。
                 complete_names();
                 return;
             }
-            let n = rest.remove(0);
-            rest.extend(words.iter().cloned());
-            (n, rest)
-        }
+        },
         None => (name.to_string(), words.to_vec()),
     };
+
+    // タスク(SPEC §9.6): `haj run <TAB>` はタスク一覧、`haj run <名前> <TAB>` は
+    // そのタスクの --haj-complete へ転送。1行宣言(task.*)はエイリアスと同じく
+    // 展開してから扱う(exec に解決されれば下の @delegate に落ちる)。
+    if name == "run" {
+        let Some((tname, twords)) = words.split_first().map(|(t, w)| (t.clone(), w.to_vec()))
+        else {
+            complete_task_names();
+            return;
+        };
+        match tasks::lookup(&tname) {
+            Some(tasks::Task::File(cmd)) => {
+                for c in contract::complete(&cmd, &twords) {
+                    println!("{c}");
+                }
+                return;
+            }
+            Some(tasks::Task::Decl { expansion, .. }) => {
+                match split_expansion(&expansion, &twords) {
+                    Some((n, w)) => {
+                        name = n;
+                        words = w;
+                    }
+                    None => return, // フラグだけの宣言。候補は作れない
+                }
+            }
+            None => return, // 未知のタスク。候補なし(補完中に赤い文字を出さない)
+        }
+    }
     let words: &[String] = &words;
 
     // exec / sh は haj の外のコマンドを走らせる。候補は haj には作れないので、
@@ -705,6 +944,42 @@ fn complete(args: &[String]) {
     for c in contract::complete(&cmd, words) {
         println!("{c}");
     }
+}
+
+/// 展開文字列を argv に割り、先頭のグローバルフラグを補完用に読み飛ばす
+/// (-C は実際に移動する — 移動先のコマンドを補完するため)。エイリアスと
+/// タスク宣言(SPEC §9.6)で共用。フラグの後に名前が無ければ None。
+fn split_expansion(expansion: &str, extra: &[String]) -> Option<(String, Vec<String>)> {
+    let argv: Vec<String> = expansion.split_whitespace().map(str::to_string).collect();
+    let mut i = 0;
+    while i < argv.len() {
+        match argv[i].as_str() {
+            "-C" => {
+                if let Some(dir) = argv.get(i + 1) {
+                    let _ = std::env::set_current_dir(expand_home(dir));
+                }
+                i += 2;
+            }
+            "--secret" | "--env-file" | "--secret-file" => i += 2,
+            _ => break,
+        }
+    }
+    let mut rest: Vec<String> = argv[i.min(argv.len())..].to_vec();
+    if rest.is_empty() {
+        return None;
+    }
+    let n = rest.remove(0);
+    rest.extend(extra.iter().cloned());
+    Some((n, rest))
+}
+
+/// `haj __complete run` — タスクの一覧を "名前\t説明" で出す(SPEC §6)。
+fn complete_task_names() {
+    let mut cache = DescribeCache::load();
+    for t in tasks::list() {
+        println!("{}\t{}", t.name(), task_summary(&mut cache, &t));
+    }
+    cache.save();
 }
 
 /// 打てる名前を全部出す(探索で見つかるもの + 組み込み + エイリアス)。

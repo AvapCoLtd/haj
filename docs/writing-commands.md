@@ -15,7 +15,8 @@ chmod +x .haj/commands/greet
 
 - **実行ビットが立った通常ファイル**だけがコマンドになる(README や .gitkeep は無視される)
 - 名前に使えないもの: `.` / `-` 始まり、`/` を含むもの、予約語
-  (`help` `commands` `which` `config` `exec` `sh` `selfupgrade` `secrets` `docs` `__complete`)
+  (`help` `commands` `which` `config` `completion` `docs` `env` `exec` `sh` `run`
+  `selfupgrade` `secrets` `tree` `__complete`)
 
 ## 2. 置き場所と優先順位
 
@@ -126,7 +127,41 @@ haj --secret DB_PASS=vault://secret/data/db/password mig up
 - ファイルで渡せと要求するツール(ssh の鍵、kubeconfig など)には `--secret-file`。
   `--secret-file KEY=vault://...` なら一時ファイルに書かれ、パスが `$KEY` に入る
 
-## 6. デバッグ
+## 6. タスク(`haj run`)— リポジトリの作業動詞
+
+install / update / build / test のような「このリポジトリの作業」は、コマンドではなく
+**タスク**にする。プロジェクトに `install` コマンドを置くと `haj install` がコアの動詞
+(`selfupgrade` / `tree install`)に見えて紛らわしい — `haj run install` なら文脈なしの
+1行でも読み違えない。
+
+置き場所は2つ(エイリアスとコマンドの関係と同型):
+
+```
+# .haj/config — 1行の委譲
+task.test = exec docker compose exec app vendor/bin/phpunit
+task.test.desc = テストを流す(コンテナ内)
+```
+
+```sh
+# .haj/tasks/<名前> — ロジックを持つ実行ファイル(規約フックはコマンドと同じ)
+mkdir -p .haj/tasks
+$EDITOR .haj/tasks/install && chmod +x .haj/tasks/install
+```
+
+- `haj run` で一覧、`haj run <名前> [引数...]` で実行
+- **探索しない・上書きしない・フォールバックしない。** 見るのは現在のプロジェクトの
+  `task.<名前>` と `.haj/tasks/<名前>` だけ(親へも遡らない)。素の `haj <名前>` では
+  呼べないし、タスクが他プロジェクトや共通のコマンドに化けることもない
+- 1行で書けなくなったら `tasks/` の実行ファイルに昇格する(委譲は宣言、ロジックは実行ファイル)
+- 規約フック(§3)と `HAJ_ROOT` / `HAJ_PROJECT`(§4)はコマンドと同じ。使い方は
+  `haj help run <名前>`、環境変数は `haj env run <名前>`、効いている定義は
+  `haj which run <名前>` で確かめられる
+
+**使い分け**: リポジトリの作業動詞 → タスク。haj の語彙を増やすツール(`mig` のような、
+名前がそのまま意味になるもの)→ コマンド。迷ったら「素の `haj <名前>` で読んだとき、
+コアの動詞や他プロジェクトの同名と紛れるか?」— 紛れるならタスク。
+
+## 7. デバッグ
 
 ```sh
 haj which --all setup     # どの定義が勝っていて、何が隠れているか
@@ -139,14 +174,14 @@ haj -C ~/repos/x help     # 別プロジェクトを起点に見る
 「説明が一覧に出ない」ときは、まず `HAJ_NO_CACHE=1` で聞き直し、次に
 `.haj/commands/<名前> --haj-describe` を直接叩いて、1行目に説明が出て exit 0 かを確かめる。
 
-## 7. やってはいけないこと
+## 8. やってはいけないこと
 
 - **予約語の名前でコマンドを置く** — 無視される(`exec` や `sh` を奪えるとシークレットの横取りができてしまうため)
 - **フックで対話やネットワークを待つ** — TAB のたびに全員が待たされ、2秒で殺される
 - **コマンド一覧を help.header に手書きする** — 一覧は自動生成される。手書きは必ず実態とズレる
 - **`haj.toml` 的な宣言でタスクを書きたくなる** — haj は意図的にそれをやらない(SPEC §11)。分岐や冪等性を含む現実のタスクは、最初からスクリプトとして書く
 
-## 8. 実例
+## 9. 実例
 
 このリポジトリの `examples/.haj/commands/deploy` に、規約フック・引数解釈・
 `HAJ_ROOT` の利用まで含めた実物がある。困ったら `haj docs spec` で契約の全文を引ける。
