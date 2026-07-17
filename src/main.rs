@@ -177,6 +177,10 @@ fn main() {
             if target == "run" {
                 task_env(rest.get(1).map(String::as_str));
             }
+            // ツリー名前空間(SPEC §9.7): haj env <ツリー名> <名前>
+            if let Some(dir) = tree::find(target) {
+                tree_env(target, &dir, rest.get(1).map(String::as_str));
+            }
             let Some(cmd) = discovery::resolve(target) else {
                 eprintln!("haj: 未知のコマンドです: {target}");
                 std::process::exit(1);
@@ -229,6 +233,12 @@ fn main() {
         _ => {}
     }
 
+    // ツリー名前空間(SPEC §9.7)。予約語 > エイリアス > ツリー名 > 探索 —
+    // ツリー名が探索より手前なのは、名前空間が cwd に依存せずどこでも同じに動くため。
+    if let Some(dir) = tree::find(name) {
+        run_tree_namespace(name, &dir, rest, &deliveries);
+    }
+
     let Some(cmd) = discovery::resolve(name) else {
         eprintln!("haj: 未知のコマンドです: {name}\n");
         print_usage();
@@ -236,6 +246,80 @@ fn main() {
     };
 
     exec_command(&cmd, rest, &deliveries)
+}
+
+/// `haj <ツリー名> [<名前>] [引数...]`(SPEC §9.7)— ツリー名前空間。
+/// expose に関係なく全ツリーで使える明示形。run が「このプロジェクトの」を
+/// 明示するのと同型で、こちらは「このツリーの」を明示する。
+fn run_tree_namespace(
+    tree_name: &str,
+    dir: &std::path::Path,
+    args: &[String],
+    deliveries: &[secrets::Delivery],
+) -> ! {
+    let Some((cname, rest)) = args.split_first() else {
+        list_tree_commands(tree_name, dir);
+    };
+    let Some(cmd) = tree::tree_command(tree_name, dir, cname) else {
+        eprintln!("haj: {tree_name} に {cname} はありません (haj {tree_name} で一覧)");
+        std::process::exit(127);
+    };
+    exec_command(&cmd, rest, deliveries)
+}
+
+/// `haj <ツリー名>`(引数なし)— そのツリーのコマンド一覧(run と同じ振る舞い)。
+fn list_tree_commands(tree_name: &str, dir: &std::path::Path) -> ! {
+    let cmds = tree::tree_commands(tree_name, dir);
+    if cmds.is_empty() {
+        println!("ツリー {tree_name} にコマンドはありません。");
+        std::process::exit(0);
+    }
+    println!(" ツリー: {tree_name}  ({})", tree::tree_root(dir).display());
+    println!("\n コマンド (haj {tree_name} <名前> で実行):");
+    let mut cache = DescribeCache::load();
+    let width = cmds.iter().map(|c| c.name.len()).max().unwrap_or(8);
+    for c in &cmds {
+        let d = describe(&mut cache, c).unwrap_or_default();
+        println!("   {:width$}  {}", c.name, d, width = width);
+    }
+    cache.save();
+    std::process::exit(0);
+}
+
+/// `haj env <ツリー名> <名前>`(SPEC §9.7)。
+fn tree_env(tree_name: &str, dir: &std::path::Path, name: Option<&str>) -> ! {
+    let Some(name) = name else {
+        die(&format!("使い方: haj env {tree_name} <名前>"));
+    };
+    let Some(cmd) = tree::tree_command(tree_name, dir, name) else {
+        eprintln!("haj: {tree_name} に {name} はありません");
+        std::process::exit(1);
+    };
+    match contract::env_vars(&cmd) {
+        Some(v) => println!("{v}"),
+        None => {
+            eprintln!(
+                "haj: {name} は --haj-env に対応していません ({})",
+                cmd.path.display()
+            );
+            std::process::exit(1);
+        }
+    }
+    std::process::exit(0);
+}
+
+/// `haj which <ツリー名> <名前>`(SPEC §9.7)。
+fn tree_which(tree_name: &str, dir: &std::path::Path, name: &str) -> ! {
+    match tree::tree_command(tree_name, dir, name) {
+        Some(cmd) => {
+            println!("{}", cmd.path.display());
+            std::process::exit(0);
+        }
+        None => {
+            eprintln!("haj: {tree_name} に {name} はありません");
+            std::process::exit(1);
+        }
+    }
 }
 
 /// 見つかったコマンド/タスクを exec(2) で実行する(戻らない)。
@@ -547,6 +631,24 @@ fn which(args: &[String]) -> ! {
         }
     }
 
+    // ツリー名前空間(SPEC §9.7): haj which <ツリー名> [<名前>]
+    if let Some(first) = non_flags.first() {
+        if let Some(dir) = tree::find(first) {
+            match non_flags.get(1) {
+                Some(cname) => tree_which(first, &dir, cname),
+                None => {
+                    println!(
+                        "{}  [ツリー {}]  (haj which {} <名前> でコマンドのパス)",
+                        dir.display(),
+                        first,
+                        first
+                    );
+                    std::process::exit(0);
+                }
+            }
+        }
+    }
+
     let Some(target) = args.iter().find(|a| !a.starts_with('-')) else {
         eprintln!("haj: 使い方: haj which [--all] <コマンド名> / haj which run <タスク>");
         std::process::exit(1);
@@ -635,6 +737,25 @@ fn print_help(args: &[String]) {
             println!("{h}");
             return;
         }
+        // ツリー名前空間(§9.7): haj help <ツリー名> [<名前>]
+        if let Some(dir) = tree::find(topic) {
+            let Some(cname) = args.get(1) else {
+                list_tree_commands(topic, &dir);
+            };
+            let Some(cmd) = tree::tree_command(topic, &dir, cname) else {
+                eprintln!("haj: {topic} に {cname} はありません");
+                std::process::exit(1);
+            };
+            match contract::long_help(&cmd) {
+                Some(h) => println!("{h}"),
+                None => println!(
+                    "{} には使い方の説明がありません ({})",
+                    cmd.name,
+                    cmd.path.display()
+                ),
+            }
+            return;
+        }
         let Some(cmd) = discovery::resolve(topic) else {
             eprintln!("haj: 未知のコマンドです: {topic}");
             std::process::exit(1);
@@ -717,6 +838,26 @@ fn print_help(args: &[String]) {
                 t.name(),
                 task_summary(&mut cache, t),
                 twidth = twidth
+            );
+        }
+    }
+    // 名前空間のツリー(SPEC §9.7)。素の一覧から消えている分、入口をここに出す。
+    // コマンドを並べず1行に畳む(一覧の長さを膨らませない)。
+    let ns_trees = tree::namespaced();
+    if !ns_trees.is_empty() {
+        println!("\n ツリー名前空間 (haj <ツリー名> <名前> で実行):");
+        let nwidth = ns_trees
+            .iter()
+            .map(|(n, _)| n.len())
+            .max()
+            .unwrap_or(0)
+            .max(width);
+        for (n, dir) in &ns_trees {
+            let count = tree::tree_commands(n, dir).len();
+            println!(
+                "   {:nwidth$}  {count} コマンド (haj {n} で一覧)",
+                n,
+                nwidth = nwidth
             );
         }
     }
@@ -937,6 +1078,28 @@ fn complete(args: &[String]) {
         return;
     }
 
+    // ツリー名前空間(§9.7): haj <ツリー名> <TAB> は一覧、以降は転送。
+    if let Some(dir) = tree::find(&name) {
+        match words.split_first() {
+            None => {
+                let mut cache = DescribeCache::load();
+                for c in tree::tree_commands(&name, &dir) {
+                    let d = describe(&mut cache, &c).unwrap_or_default();
+                    println!("{}\t{}", c.name, d);
+                }
+                cache.save();
+            }
+            Some((cname, cwords)) => {
+                if let Some(cmd) = tree::tree_command(&name, &dir, cname) {
+                    for c in contract::complete(&cmd, cwords) {
+                        println!("{c}");
+                    }
+                }
+            }
+        }
+        return;
+    }
+
     // 未知のコマンドなら候補なし。エラーにはしない(補完中に赤い文字を出さない)。
     let Some(cmd) = discovery::resolve(&name) else {
         return;
@@ -1004,7 +1167,13 @@ fn complete_names() {
         let d = a.summary();
         (a.name, d)
     }));
+    // ツリー名も呼べる名前(SPEC §9.7 — 名前空間の入口)
+    rows.extend(tree::installed().into_iter().map(|(n, _)| {
+        let d = format!("ツリーのコマンド (haj {n} で一覧)");
+        (n, d)
+    }));
     rows.sort();
+    rows.dedup_by(|a, b| a.0 == b.0);
     for (name, desc) in rows {
         println!("{name}\t{desc}");
     }

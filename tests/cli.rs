@@ -2000,3 +2000,179 @@ fn エイリアスからrunへ委譲でき宣言の展開は1回だけ() {
         "execへの委譲指示が出ない:\n{comp}"
     );
 }
+
+// ---- ツリー名前空間(SPEC §9.7): haj <ツリー名> <名前> ----
+
+#[test]
+fn ツリー名前空間は常に使えexposeで素の露出が消える() {
+    let sb = Sandbox::new("tree-ns");
+    let cp = sb.path("nonexistent");
+    let cp = cp.to_str().unwrap();
+
+    // flat(既定)のツリー: 素の形も名前空間も両方使える
+    let remote = git_remote(&sb, "remote/tools");
+    sb.command(
+        "remote/tools",
+        "greet",
+        &conforming("あいさつ", "あいさつの使い方", "loud quiet", "echo HELLO"),
+    );
+    commit_all(&remote, "greet");
+    let out = sb.haj(&sb.dir, cp, &["tree", "install", remote.to_str().unwrap()]);
+    assert!(out.status.success());
+
+    let out = sb.haj(&sb.dir, cp, &["greet"]);
+    assert_eq!(stdout(&out).trim(), "HELLO", "flat の素の形が使えない");
+    let out = sb.haj(&sb.dir, cp, &["tools", "greet"]);
+    assert_eq!(stdout(&out).trim(), "HELLO", "名前空間の明示形が使えない");
+
+    // expose = namespace のツリー: 素の形から消え、名前空間でだけ呼べる
+    let remote2 = git_remote(&sb, "remote/ext");
+    sb.command(
+        "remote/ext",
+        "install",
+        &conforming("入れる", "入れ方", "", "echo INSTALLED $1"),
+    );
+    sb.write("remote/ext/config", "name = ext\nexpose = namespace\n");
+    commit_all(&remote2, "ext");
+    let out = sb.haj(&sb.dir, cp, &["tree", "install", remote2.to_str().unwrap()]);
+    assert!(
+        out.status.success(),
+        "install 失敗: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let out = sb.haj(&sb.dir, cp, &["install"]);
+    assert_eq!(
+        out.status.code(),
+        Some(127),
+        "namespace ツリーのコマンドが素の形で生えている"
+    );
+    let out = sb.haj(&sb.dir, cp, &["ext", "install", "foo"]);
+    assert_eq!(
+        stdout(&out).trim(),
+        "INSTALLED foo",
+        "名前空間で実行できない: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    // haj <ツリー名>(引数なし)は一覧
+    let list = stdout(&sb.haj(&sb.dir, cp, &["ext"]));
+    assert!(
+        list.contains("install") && list.contains("入れる"),
+        "一覧が出ない:\n{list}"
+    );
+
+    // 未知の名前は 127
+    let out = sb.haj(&sb.dir, cp, &["ext", "nope"]);
+    assert_eq!(out.status.code(), Some(127));
+
+    // tree list に (namespace) と出る
+    let list = stdout(&sb.haj(&sb.dir, cp, &["tree", "list"]));
+    assert!(list.contains("(namespace)"), "list に出ない:\n{list}");
+}
+
+#[test]
+fn ツリー名前空間の合成形と補完とhelpの入口() {
+    let sb = Sandbox::new("tree-ns-meta");
+    let cp = sb.path("nonexistent");
+    let cp = cp.to_str().unwrap();
+
+    let remote = git_remote(&sb, "remote/ext");
+    let body = "#!/bin/sh\ncase \"$1\" in\n  --haj-describe) echo 入れる; exit 0 ;;\n  --haj-help) echo 入れ方の詳細; exit 0 ;;\n  --haj-complete) shift; [ $# -eq 0 ] && printf '%s\\n' locale-ja theme; exit 0 ;;\n  --haj-env) echo 'EXT_DIR=/tmp/x'; exit 0 ;;\nesac\necho RUN\n";
+    let dir = sb.dir.join("remote/ext/commands");
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(dir.join("install"), body).unwrap();
+    fs::set_permissions(dir.join("install"), fs::Permissions::from_mode(0o755)).unwrap();
+    sb.write("remote/ext/config", "name = ext\nexpose = namespace\n");
+    commit_all(&remote, "ext");
+
+    let out = sb.haj(&sb.dir, cp, &["tree", "install", remote.to_str().unwrap()]);
+    assert!(
+        out.status.success(),
+        "install 失敗: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    // help / env / which の合成形
+    let help = stdout(&sb.haj(&sb.dir, cp, &["help", "ext", "install"]));
+    assert!(
+        help.contains("入れ方の詳細"),
+        "--haj-help が出ない:\n{help}"
+    );
+    let env = stdout(&sb.haj(&sb.dir, cp, &["env", "ext", "install"]));
+    assert!(env.contains("EXT_DIR=/tmp/x"), "--haj-env が出ない:\n{env}");
+    let which = stdout(&sb.haj(&sb.dir, cp, &["which", "ext", "install"]));
+    assert!(
+        which.contains("commands/install"),
+        "which がパスを見せない:\n{which}"
+    );
+
+    // 補完: ツリー名は打てる名前として出る。haj ext <TAB> は一覧、以降は転送
+    let comp = stdout(&sb.haj(&sb.dir, cp, &["__complete"]));
+    assert!(comp.contains("ext\t"), "ツリー名が補完に出ない:\n{comp}");
+    assert!(
+        !comp.contains("install\t"),
+        "namespace のコマンドが素の補完に漏れている:\n{comp}"
+    );
+    let comp = stdout(&sb.haj(&sb.dir, cp, &["__complete", "ext"]));
+    assert!(comp.contains("install\t入れる"), "一覧が出ない:\n{comp}");
+    let comp = stdout(&sb.haj(&sb.dir, cp, &["__complete", "ext", "install"]));
+    assert!(comp.contains("locale-ja"), "転送されない:\n{comp}");
+
+    // help に入口の1行が出る(コマンドは並べない)
+    let help = stdout(&sb.haj(&sb.dir, cp, &["help"]));
+    assert!(
+        help.contains("ツリー名前空間") && help.contains("haj ext で一覧"),
+        "help に入口が無い:\n{help}"
+    );
+}
+
+#[test]
+fn ツリー名は探索より手前でエイリアスより後() {
+    let sb = Sandbox::new("tree-ns-order");
+    let cp = sb.path("syscmds");
+
+    let remote = git_remote(&sb, "remote/tools");
+    sb.command(
+        "remote/tools",
+        "greet",
+        &conforming("あいさつ", "", "", "echo TREE_GREET"),
+    );
+    commit_all(&remote, "tools");
+    let out = sb.haj(
+        &sb.dir,
+        cp.to_str().unwrap(),
+        &["tree", "install", remote.to_str().unwrap()],
+    );
+    assert!(out.status.success());
+
+    // 共通スコープに tools という名前のコマンドを置いても、ツリー名前空間が勝つ
+    sb.command("sys", "tools", "#!/bin/sh\necho FLAT_CMD\n");
+    let syscp = sb.path("sys/commands");
+    let out = sb.haj(&sb.dir, syscp.to_str().unwrap(), &["tools"]);
+    assert!(
+        stdout(&out).contains("greet"),
+        "ツリー名が探索に負けている:\n{}",
+        stdout(&out)
+    );
+
+    // エイリアスはツリー名より勝つ
+    sb.write(
+        "xdgconf/haj/config",
+        "alias.tools = sh -- echo ALIAS_WINS\n",
+    );
+    let out = Command::new(env!("CARGO_BIN_EXE_haj"))
+        .args(["tools"])
+        .current_dir(&sb.dir)
+        .env("HAJ_COMMAND_PATH", sb.path("nonexistent"))
+        .env("HAJ_NO_CACHE", "1")
+        .env("HOME", &sb.dir)
+        .env("XDG_CONFIG_HOME", sb.path("xdgconf"))
+        .output()
+        .unwrap();
+    assert_eq!(
+        stdout(&out).trim(),
+        "ALIAS_WINS",
+        "エイリアスがツリー名に負けている"
+    );
+}

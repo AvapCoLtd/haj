@@ -54,6 +54,72 @@ pub fn tree_root(dir: &Path) -> PathBuf {
     }
 }
 
+/// ツリーの config の `expose`(SPEC §9.7)。`namespace` なら素の探索から外れ、
+/// 名前空間(`haj <ツリー名> <名前>`)でだけ呼べる。既定は flat(従来どおり)。
+pub fn is_namespaced(dir: &Path) -> bool {
+    let Ok(s) = std::fs::read_to_string(tree_root(dir).join("config")) else {
+        return false;
+    };
+    crate::config::parse_kv(&s)
+        .get("expose")
+        .map(String::as_str)
+        == Some("namespace")
+}
+
+/// 名前からインストール済みツリーを引く(名前空間ディスパッチ用。SPEC §9.7)。
+pub fn find(name: &str) -> Option<PathBuf> {
+    installed()
+        .into_iter()
+        .find(|(n, _)| n == name)
+        .map(|(_, d)| d)
+}
+
+/// `expose = namespace` を宣言したツリーだけを返す(help の入口表示用)。
+pub fn namespaced() -> Vec<(String, PathBuf)> {
+    installed()
+        .into_iter()
+        .filter(|(_, d)| is_namespaced(d))
+        .collect()
+}
+
+/// そのツリーのコマンドを名前順に返す(名前空間の一覧・補完用)。
+pub fn tree_commands(tree: &str, dir: &Path) -> Vec<crate::discovery::Command> {
+    let root = tree_root(dir);
+    let cdir = root.join("commands");
+    let Ok(entries) = std::fs::read_dir(&cdir) else {
+        return Vec::new();
+    };
+    let mut v: Vec<crate::discovery::Command> = entries
+        .flatten()
+        .filter(|e| crate::discovery::is_executable(&e.path()))
+        .filter_map(|e| e.file_name().into_string().ok())
+        .filter(|n| crate::discovery::is_valid_name(n))
+        .map(|n| crate::discovery::Command {
+            path: cdir.join(&n),
+            name: n,
+            root: Some(root.clone()),
+            origin: crate::project::Origin::Tree(tree.to_string()),
+        })
+        .collect();
+    v.sort_by(|a, b| a.name.cmp(&b.name));
+    v
+}
+
+/// そのツリーの1コマンドを引く。名前の制約はコマンドと同一(§2.6)。
+pub fn tree_command(tree: &str, dir: &Path, name: &str) -> Option<crate::discovery::Command> {
+    if !crate::discovery::is_valid_name(name) {
+        return None;
+    }
+    let root = tree_root(dir);
+    let path = root.join("commands").join(name);
+    crate::discovery::is_executable(&path).then(|| crate::discovery::Command {
+        name: name.to_string(),
+        path,
+        root: Some(root),
+        origin: crate::project::Origin::Tree(tree.to_string()),
+    })
+}
+
 /// インストール済みツリーを名前順に返す(名前 = ディレクトリ名)。
 /// 個人 > グローバルの順で見て、同名は近いスコープが勝つ(コマンド探索と同じ規律)。
 pub fn installed() -> Vec<(String, PathBuf)> {
@@ -197,6 +263,17 @@ fn install(args: &[String]) -> ! {
     println!("インストールしました: {name} ({n} コマンド)");
     println!("  {}", dest.display());
     println!("  一覧に [{name}] として出ます (haj help で確認)");
+
+    // この名前は名前空間の名にもなる(§9.7)。既存の語彙と衝突していたら教える
+    // (入れるのは止めない — --name で改名すればよい)。
+    if crate::discovery::is_reserved(&name) {
+        eprintln!("warning: {name} は予約語なので haj {name} では呼べません (remove して --name で改名を)");
+    } else if crate::aliases::lookup(&name).is_some() || crate::discovery::resolve(&name).is_some()
+    {
+        eprintln!(
+            "warning: {name} は既存の語彙と衝突しています (haj which --all {name} で確認。名前空間が勝ちます)"
+        );
+    }
     std::process::exit(0);
 }
 
@@ -251,7 +328,12 @@ fn list() -> ! {
         let url = git(Some(&dir), &["remote", "get-url", "origin"]).unwrap_or_default();
         let head = git(Some(&dir), &["rev-parse", "--short", "HEAD"]).unwrap_or_default();
         let n = command_count(&dir);
-        println!("{name:width$}  {head:8}  {n:3} コマンド  {url}");
+        let ns = if is_namespaced(&dir) {
+            "  (namespace)"
+        } else {
+            ""
+        };
+        println!("{name:width$}  {head:8}  {n:3} コマンド  {url}{ns}");
     }
     std::process::exit(0);
 }
