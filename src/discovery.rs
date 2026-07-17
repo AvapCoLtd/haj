@@ -87,8 +87,13 @@ pub fn command_dirs() -> Vec<Dir> {
         });
     }
 
-    // 3. インストール済みツリー(haj tree install。SPEC §9.5)
+    // 3. インストール済みツリー(haj tree install。SPEC §9.5)。
+    //    expose = namespace のツリーは素の探索から外れる(§9.7 —
+    //    名前空間 haj <ツリー名> <名前> でだけ呼べる)。
     for (name, dir) in crate::tree::installed() {
+        if crate::tree::is_namespaced(&dir) {
+            continue;
+        }
         let d = crate::tree::tree_root(&dir).join("commands");
         if d.is_dir() {
             dirs.push(Dir {

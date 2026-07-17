@@ -288,14 +288,26 @@ pub fn complete(name: &str, words: &[String]) -> Vec<String> {
         // haj help <TAB> / haj which <TAB> → コマンド名を出す
         "help" | "which" | "env" => {
             // 合成形 (SPEC §9.6): haj help run <TAB> / haj env run <TAB> → タスク名
-            if words.first().map(String::as_str) == Some("run") {
-                if words.len() == 1 {
-                    return crate::tasks::list()
-                        .into_iter()
-                        .map(|t| t.name().to_string())
-                        .collect();
+            if let Some(first) = words.first() {
+                if first == "run" {
+                    if words.len() == 1 {
+                        return crate::tasks::list()
+                            .into_iter()
+                            .map(|t| t.name().to_string())
+                            .collect();
+                    }
+                    return Vec::new();
                 }
-                return Vec::new();
+                // 合成形 (SPEC §9.7): haj help <ツリー名> <TAB> → そのツリーのコマンド名
+                if let Some(dir) = crate::tree::find(first) {
+                    if words.len() == 1 {
+                        return crate::tree::tree_commands(first, &dir)
+                            .into_iter()
+                            .map(|c| c.name)
+                            .collect();
+                    }
+                    return Vec::new();
+                }
             }
             if !words.is_empty() && name != "which" {
                 return Vec::new(); // help / env は引数1つだけ
