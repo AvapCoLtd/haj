@@ -1721,3 +1721,282 @@ fn completionのzsh版はevalしても補完関数を即実行しない() {
         "即時呼び出しがガードの外にある(末尾: {last})"
     );
 }
+
+// ---- タスク(SPEC §9.6): haj run ----
+
+/// `.haj/tasks/<名前>` に実行可能なタスクを置く。
+fn task_file(sb: &Sandbox, project: &str, name: &str, body: &str) -> PathBuf {
+    let dir = sb.dir.join(project).join(".haj").join("tasks");
+    fs::create_dir_all(&dir).unwrap();
+    let path = dir.join(name);
+    fs::write(&path, body).unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+    path
+}
+
+#[test]
+fn タスクはrunで実行され素性の環境変数が渡る() {
+    let sb = Sandbox::new("task-run");
+    fs::create_dir_all(sb.path("proj/.haj")).unwrap();
+    task_file(
+        &sb,
+        "proj",
+        "build",
+        "#!/bin/sh\necho BUILT $1 name=$HAJ_NAME project=$HAJ_PROJECT root=$HAJ_ROOT\n",
+    );
+
+    let out = haj_with_config(&sb, &sb.path("proj"), &["run", "build", "v2"]);
+    assert!(
+        out.status.success(),
+        "タスクを実行できない: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    // HAJ_NAME はタスクの名前(run ではない)。HAJ_ROOT はプロジェクトの .haj。
+    assert_eq!(
+        stdout(&out).trim(),
+        format!(
+            "BUILT v2 name=build project=proj root={}",
+            sb.path("proj/.haj").display()
+        )
+    );
+}
+
+#[test]
+fn タスクとコマンドの名前空間は交わらない() {
+    let sb = Sandbox::new("task-ns");
+    task_file(&sb, "proj", "install", "#!/bin/sh\necho TASK\n");
+    sb.command("proj/.haj", "deploy", "#!/bin/sh\necho CMD\n");
+
+    // タスクは素の名前で呼べない(探索に乗らない)
+    let out = haj_with_config(&sb, &sb.path("proj"), &["install"]);
+    assert_eq!(out.status.code(), Some(127), "タスクが素の名前で生えている");
+
+    // コマンドは run で呼べない(フォールバックしない)。代わりに案内を出す
+    let out = haj_with_config(&sb, &sb.path("proj"), &["run", "deploy"]);
+    assert_eq!(out.status.code(), Some(127));
+    let err = String::from_utf8_lossy(&out.stderr).to_string();
+    assert!(
+        err.contains("コマンドとして定義"),
+        "コマンドへの案内が出ない:\n{err}"
+    );
+}
+
+#[test]
+fn タスクの1行宣言は展開されファイルより勝つ() {
+    let sb = Sandbox::new("task-decl");
+    sb.write(
+        "proj/.haj/config",
+        "name = myapp\ntask.hi = sh -- echo DECL $HAJ_PROJECT\ntask.hi.desc = あいさつ\n",
+    );
+    task_file(&sb, "proj", "hi", "#!/bin/sh\necho FILE\n");
+
+    let out = haj_with_config(&sb, &sb.path("proj"), &["run", "hi"]);
+    assert!(
+        out.status.success(),
+        "宣言タスクを実行できない: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(stdout(&out).trim(), "DECL myapp", "宣言が勝っていない");
+}
+
+#[test]
+fn runはプロジェクトの外では使えず親へも遡らない() {
+    let sb = Sandbox::new("task-boundary");
+
+    // プロジェクトの外は exit 1
+    let out = haj_with_config(&sb, &sb.dir, &["run", "x"]);
+    assert_eq!(out.status.code(), Some(1), "プロジェクトの外で run が通る");
+
+    // 親プロジェクトのタスクは、root = false の子からも見えない(遡らない)
+    task_file(&sb, "parent", "x", "#!/bin/sh\necho PARENT\n");
+    sb.write("parent/child/.haj/config", "root = false\n");
+    let out = haj_with_config(&sb, &sb.path("parent/child"), &["run", "x"]);
+    assert_eq!(out.status.code(), Some(127), "親のタスクへ遡っている");
+
+    // 親のプロジェクトの中では動く
+    let out = haj_with_config(&sb, &sb.path("parent"), &["run", "x"]);
+    assert_eq!(stdout(&out).trim(), "PARENT");
+}
+
+#[test]
+fn run一覧とhelpの節と補完にタスクが出る() {
+    let sb = Sandbox::new("task-list");
+    sb.write(
+        "proj/.haj/config",
+        "name = myapp\ntask.up = sh -- echo UP\ntask.up.desc = 上げる\n",
+    );
+    task_file(
+        &sb,
+        "proj",
+        "check",
+        &conforming("検査する", "検査の使い方", "quick full", "echo CHECKED"),
+    );
+
+    // haj run(引数なし)= 一覧。宣言もファイルも説明つきで出る
+    let list = stdout(&haj_with_config(&sb, &sb.path("proj"), &["run"]));
+    assert!(
+        list.contains("up") && list.contains("上げる"),
+        "一覧に宣言が出ない:\n{list}"
+    );
+    assert!(
+        list.contains("check") && list.contains("検査する"),
+        "一覧にファイルが出ない:\n{list}"
+    );
+
+    // help にタスクの節が出る
+    let help = stdout(&haj_with_config(&sb, &sb.path("proj"), &["help"]));
+    assert!(
+        help.contains("プロジェクトのタスク"),
+        "helpに節が無い:\n{help}"
+    );
+    assert!(help.contains("check"), "helpにタスク名が無い:\n{help}");
+
+    // __complete run → "名前\t説明" のタスク一覧
+    let comp = stdout(&haj_with_config(
+        &sb,
+        &sb.path("proj"),
+        &["__complete", "run"],
+    ));
+    assert!(comp.contains("check\t検査する"), "補完に出ない:\n{comp}");
+    assert!(comp.contains("up\t上げる"), "宣言が補完に出ない:\n{comp}");
+
+    // __complete run <名前> → そのタスクの --haj-complete へ転送
+    let comp = stdout(&haj_with_config(
+        &sb,
+        &sb.path("proj"),
+        &["__complete", "run", "check"],
+    ));
+    assert!(
+        comp.contains("quick"),
+        "タスクの補完が転送されない:\n{comp}"
+    );
+
+    // タスクは素の名前の補完(コマンド一覧)には出ない
+    let comp = stdout(&haj_with_config(&sb, &sb.path("proj"), &["__complete"]));
+    assert!(
+        !comp.contains("check\t") && !comp.contains("up\t"),
+        "素の一覧にタスクが漏れている:\n{comp}"
+    );
+}
+
+#[test]
+fn helpとenvとwhichはrun合成形でタスクに答える() {
+    let sb = Sandbox::new("task-meta");
+    sb.write("proj/.haj/config", "task.hi = sh -- echo HI\n");
+    task_file(
+        &sb,
+        "proj",
+        "check",
+        &conforming("検査する", "検査の使い方", "", "echo CHECKED"),
+    );
+
+    let help = stdout(&haj_with_config(
+        &sb,
+        &sb.path("proj"),
+        &["help", "run", "check"],
+    ));
+    assert!(
+        help.contains("検査の使い方"),
+        "--haj-help が出ない:\n{help}"
+    );
+
+    // which run は効いている定義(宣言の展開 / ファイルのパス)を見せる
+    let which = stdout(&haj_with_config(
+        &sb,
+        &sb.path("proj"),
+        &["which", "run", "hi"],
+    ));
+    assert!(
+        which.contains("task.hi = sh -- echo HI"),
+        "whichが宣言を見せない:\n{which}"
+    );
+    let which = stdout(&haj_with_config(
+        &sb,
+        &sb.path("proj"),
+        &["which", "run", "check"],
+    ));
+    assert!(
+        which.contains(&sb.path("proj/.haj/tasks/check").display().to_string()),
+        "whichがパスを見せない:\n{which}"
+    );
+
+    // env run は --haj-env の中継(コマンドと同じ形の検証つき)
+    let envtask =
+        "#!/bin/sh\ncase \"$1\" in --haj-env) echo 'CHECK_LEVEL=1'; exit 0 ;; esac\necho RUN\n";
+    task_file(&sb, "proj", "metrics", envtask);
+    let env = stdout(&haj_with_config(
+        &sb,
+        &sb.path("proj"),
+        &["env", "run", "metrics"],
+    ));
+    assert!(
+        env.contains("CHECK_LEVEL=1"),
+        "--haj-env が中継されない:\n{env}"
+    );
+}
+
+#[test]
+fn runは予約語でありタスク名にも予約語は使えない() {
+    let sb = Sandbox::new("task-reserved");
+    // .haj/commands/run を置いても組み込みの run は奪えない
+    sb.command("proj/.haj", "run", "#!/bin/sh\necho HIJACKED\n");
+    task_file(&sb, "proj", "help", "#!/bin/sh\necho TASKHELP\n");
+    task_file(&sb, "proj", "ok", "#!/bin/sh\necho OK\n");
+
+    let out = haj_with_config(&sb, &sb.path("proj"), &["run", "ok"]);
+    assert_eq!(stdout(&out).trim(), "OK", "組み込みの run が奪われた");
+
+    // 予約語の名前のタスクは無効(名前の制約はコマンドと同一)
+    let out = haj_with_config(&sb, &sb.path("proj"), &["run", "help"]);
+    assert_eq!(out.status.code(), Some(127), "予約語名のタスクが生えている");
+}
+
+#[test]
+fn ユーザー設定のtask鍵は無視される() {
+    // タスクはプロジェクト局所の概念。task.* はプロジェクトの .haj/config からしか
+    // 読まない(どこでも効かせたいものはエイリアスかコマンドにする)。
+    let sb = Sandbox::new("task-scope");
+    sb.write("xdgconf/haj/config", "task.hi = sh -- echo USER\n");
+    fs::create_dir_all(sb.path("proj/.haj")).unwrap();
+
+    let out = haj_with_config(&sb, &sb.path("proj"), &["run", "hi"]);
+    assert_eq!(
+        out.status.code(),
+        Some(127),
+        "ユーザー設定の task.* が効いている"
+    );
+}
+
+#[test]
+fn エイリアスからrunへ委譲でき宣言の展開は1回だけ() {
+    let sb = Sandbox::new("task-chain");
+    sb.write("xdgconf/haj/config", "alias.t = run hi\n");
+    sb.write(
+        "proj/.haj/config",
+        "task.hi = sh -- echo HI\ntask.a = run b\ntask.b = sh -- echo B\ntask.k = exec git\n",
+    );
+
+    // エイリアス → run 宣言 は動く(エイリアス1回 + タスク1回。フラグは別)
+    let out = haj_with_config(&sb, &sb.path("proj"), &["t"]);
+    assert_eq!(
+        stdout(&out).trim(),
+        "HI",
+        "エイリアス経由で宣言タスクが動かない: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    // task.a = run b(宣言 → 宣言)は再展開しない(エイリアスの「再帰しない」と同じ)
+    let out = haj_with_config(&sb, &sb.path("proj"), &["run", "a"]);
+    assert_eq!(out.status.code(), Some(127), "宣言が再帰展開されている");
+
+    // 宣言が exec に解決されたら、補完はそのコマンド自身へ委譲する(@delegate)
+    let comp = stdout(&haj_with_config(
+        &sb,
+        &sb.path("proj"),
+        &["__complete", "run", "k"],
+    ));
+    assert!(
+        comp.starts_with("@delegate\tgit"),
+        "execへの委譲指示が出ない:\n{comp}"
+    );
+}

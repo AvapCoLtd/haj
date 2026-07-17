@@ -25,24 +25,25 @@ pub struct Alias {
 }
 
 impl Alias {
-    /// 一覧・補完に出す説明。`.desc` があればそれ、無ければ展開そのもの
-    /// (長いものは切り詰める。読めないより短い方がまし)。
+    /// 一覧・補完に出す説明。`.desc` があればそれ、無ければ展開そのもの。
     pub fn summary(&self) -> String {
-        if let Some(d) = &self.desc {
-            return d.clone();
+        match &self.desc {
+            Some(d) => d.clone(),
+            None => expansion_summary(&self.expansion),
         }
-        const MAX: usize = 48;
-        let one_line: String = self
-            .expansion
-            .split_whitespace()
-            .collect::<Vec<_>>()
-            .join(" ");
-        if one_line.chars().count() <= MAX {
-            format!("→ haj {one_line}")
-        } else {
-            let short: String = one_line.chars().take(MAX).collect();
-            format!("→ haj {short}…")
-        }
+    }
+}
+
+/// 展開そのものを一覧向けの一行に整える(長いものは切り詰める。読めないより
+/// 短い方がまし)。エイリアスとタスク宣言(SPEC §9.6 の task.*)で共用する。
+pub fn expansion_summary(expansion: &str) -> String {
+    const MAX: usize = 48;
+    let one_line: String = expansion.split_whitespace().collect::<Vec<_>>().join(" ");
+    if one_line.chars().count() <= MAX {
+        format!("→ haj {one_line}")
+    } else {
+        let short: String = one_line.chars().take(MAX).collect();
+        format!("→ haj {short}…")
     }
 }
 

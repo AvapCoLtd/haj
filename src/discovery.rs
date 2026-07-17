@@ -318,6 +318,8 @@ pub fn is_valid_name(name: &str) -> bool {
 }
 
 /// コアが自分で処理する名前。サブコマンドとしては使えない。
+/// `run` を奪われると「haj run はそのプロジェクトのタスクしか実行しない」
+/// という保証(SPEC §9.6)が破れるので、exec / sh と同じ層で守る。
 pub fn is_reserved(name: &str) -> bool {
     matches!(
         name,
@@ -330,6 +332,7 @@ pub fn is_reserved(name: &str) -> bool {
             | "docs"
             | "exec"
             | "sh"
+            | "run"
             | "selfupgrade"
             | "secrets"
             | "tree"
@@ -337,7 +340,7 @@ pub fn is_reserved(name: &str) -> bool {
     )
 }
 
-fn is_executable(path: &Path) -> bool {
+pub(crate) fn is_executable(path: &Path) -> bool {
     let Ok(meta) = fs::metadata(path) else {
         // シンボリックリンク切れなど
         return false;
