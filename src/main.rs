@@ -32,6 +32,13 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 const USAGE_FLAGS: &str = "使い方: haj [-C <ディレクトリ>] [--secret <名前>=<値>]... [--env-file <ファイル>]... [--secret-file <名前|パス>=<参照|テンプレート>]... <コマンド> [引数...]";
 
 fn main() {
+    // Rust は起動前に SIGPIPE を「無視」にする。そのままだと (1) `haj help | head` の
+    // ような早閉じで haj 自身の println! が EPIPE の panic になり、(2) exec(2) は
+    // 「無視」の処分を子に引き継ぐため、サブコマンドまで SIGPIPE で死ねなくなる。
+    // ルーターは C のコマンドと同じ顔をするべきなので、既定(パイプが閉じたら
+    // 黙って死ぬ)に戻してから仕事を始める。
+    reset_sigpipe();
+
     let mut args: Vec<String> = std::env::args().skip(1).collect();
 
     let mut deliveries: Vec<secrets::Delivery> = Vec::new();
@@ -495,6 +502,18 @@ fn task_env(name: Option<&str>) -> ! {
         }
     }
     std::process::exit(0);
+}
+
+/// SIGPIPE を既定に戻す。依存クレートは増やさない — libc の signal(2) を
+/// 直接宣言する(Linux では SIGPIPE=13 / SIG_DFL=0。ビルドターゲットは
+/// musl の Linux だけなので、この定数で足りる)。
+fn reset_sigpipe() {
+    extern "C" {
+        fn signal(signum: i32, handler: usize) -> usize;
+    }
+    unsafe {
+        signal(13, 0);
+    }
 }
 
 /// 先頭の `~` を HOME に展開する。設定ファイル由来のエイリアス展開には

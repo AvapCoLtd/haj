@@ -345,6 +345,13 @@ pub fn is_reserved(name: &str) -> bool {
     )
 }
 
+/// 名前空間(run / ツリー)の**中**の名前。字面の制約は §2.6 と同じだが、
+/// **予約語は弾かない** — 名前空間の中に組み込みは居ないので、奪われるものが無い。
+/// `haj new tree` のような自然な名前を予約語が塞ぐ方が害になる(§9.6 / §9.7)。
+pub fn is_valid_ns_name(name: &str) -> bool {
+    !name.is_empty() && !name.starts_with('.') && !name.starts_with('-') && !name.contains('/')
+}
+
 pub(crate) fn is_executable(path: &Path) -> bool {
     let Ok(meta) = fs::metadata(path) else {
         // シンボリックリンク切れなど
