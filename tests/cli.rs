@@ -1936,7 +1936,7 @@ fn helpとenvとwhichはrun合成形でタスクに答える() {
 }
 
 #[test]
-fn runは予約語でありタスク名にも予約語は使えない() {
+fn runは予約語だが名前空間の中では予約語の名前も使える() {
     let sb = Sandbox::new("task-reserved");
     // .haj/commands/run を置いても組み込みの run は奪えない
     sb.command("proj/.haj", "run", "#!/bin/sh\necho HIJACKED\n");
@@ -1946,9 +1946,20 @@ fn runは予約語でありタスク名にも予約語は使えない() {
     let out = haj_with_config(&sb, &sb.path("proj"), &["run", "ok"]);
     assert_eq!(stdout(&out).trim(), "OK", "組み込みの run が奪われた");
 
-    // 予約語の名前のタスクは無効(名前の制約はコマンドと同一)
+    // 名前空間の中に組み込みは居ないので、予約語の名前のタスクも呼べる。
+    // 素の haj help は従来どおり組み込みのまま (予約語が守るのは素の名前だけ)
     let out = haj_with_config(&sb, &sb.path("proj"), &["run", "help"]);
-    assert_eq!(out.status.code(), Some(127), "予約語名のタスクが生えている");
+    assert_eq!(
+        stdout(&out).trim(),
+        "TASKHELP",
+        "run 名前空間で予約語名が使えない"
+    );
+    let out = haj_with_config(&sb, &sb.path("proj"), &["help"]);
+    assert!(
+        stdout(&out).contains("haj自身"),
+        "素の help が奪われた:\n{}",
+        stdout(&out)
+    );
 }
 
 #[test]
@@ -2226,4 +2237,37 @@ fn envは名前を省くと全コマンドのhaj_envを節で連結する() {
     // どれも対応していなければエラー
     let out = sb.haj(&sb.dir, cp, &["env", "run"]);
     assert_eq!(out.status.code(), Some(1), "外で run 集約が通っている");
+}
+
+#[test]
+fn ツリー名前空間の中でも予約語の名前が使える() {
+    // haj new tree のような自然な名前を、予約語 (tree) が塞がないこと (§9.7)
+    let sb = Sandbox::new("tree-ns-reserved");
+    let cp = sb.path("nonexistent");
+    let cp = cp.to_str().unwrap();
+
+    let remote = git_remote(&sb, "remote/gen");
+    sb.command(
+        "remote/gen",
+        "tree",
+        &conforming("骨組みを作る", "", "", "echo TREE_GEN"),
+    );
+    sb.write("remote/gen/config", "name = gen\nexpose = namespace\n");
+    commit_all(&remote, "gen");
+    let out = sb.haj(&sb.dir, cp, &["tree", "install", remote.to_str().unwrap()]);
+    assert!(out.status.success());
+
+    let out = sb.haj(&sb.dir, cp, &["gen", "tree"]);
+    assert_eq!(
+        stdout(&out).trim(),
+        "TREE_GEN",
+        "名前空間で予約語名のコマンドが呼べない: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let list = stdout(&sb.haj(&sb.dir, cp, &["gen"]));
+    assert!(list.contains("tree"), "一覧に出ない:\n{list}");
+
+    // 素の形では従来どおり予約語は組み込み (haj tree list が動く)
+    let out = sb.haj(&sb.dir, cp, &["tree", "list"]);
+    assert!(stdout(&out).contains("gen"), "組み込み tree が奪われた");
 }

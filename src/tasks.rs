@@ -59,10 +59,10 @@ fn decl_map() -> HashMap<String, String> {
     }
 }
 
-/// 宣言(`task.<名前>`)を引く。名前の制約はコマンド名と同一
-/// (SPEC §2.6 — 予約語も同様に弾く。覚える規則を1つに保つ)。
+/// 宣言(`task.<名前>`)を引く。名前の字面の制約は §2.6 と同じだが、
+/// 予約語は弾かない(run 名前空間に組み込みは居ない — discovery::is_valid_ns_name)。
 pub fn lookup_decl(name: &str) -> Option<Task> {
-    if !crate::discovery::is_valid_name(name) {
+    if !crate::discovery::is_valid_ns_name(name) {
         return None;
     }
     let map = decl_map();
@@ -82,7 +82,7 @@ pub fn lookup_decl(name: &str) -> Option<Task> {
 
 /// 実行ファイル(`.haj/tasks/<名前>`)を引く。実行可能の判定はコマンドと同じ(§2.5)。
 pub fn lookup_file(name: &str) -> Option<Command> {
-    if !crate::discovery::is_valid_name(name) {
+    if !crate::discovery::is_valid_ns_name(name) {
         return None;
     }
     let (haj, project) = project_haj()?;
@@ -115,7 +115,7 @@ pub fn list() -> Vec<Task> {
         .iter()
         .filter_map(|(k, v)| {
             let name = k.strip_prefix("task.")?;
-            (!name.ends_with(".desc") && !v.is_empty() && crate::discovery::is_valid_name(name))
+            (!name.ends_with(".desc") && !v.is_empty() && crate::discovery::is_valid_ns_name(name))
                 .then(|| Task::Decl {
                     name: name.to_string(),
                     expansion: v.clone(),
@@ -134,7 +134,7 @@ pub fn list() -> Vec<Task> {
             .flatten()
             .filter(|e| crate::discovery::is_executable(&e.path()))
             .filter_map(|e| e.file_name().into_string().ok())
-            .filter(|n| crate::discovery::is_valid_name(n))
+            .filter(|n| crate::discovery::is_valid_ns_name(n))
             .collect();
         names.sort();
         for name in names {

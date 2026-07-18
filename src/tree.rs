@@ -93,7 +93,7 @@ pub fn tree_commands(tree: &str, dir: &Path) -> Vec<crate::discovery::Command> {
         .flatten()
         .filter(|e| crate::discovery::is_executable(&e.path()))
         .filter_map(|e| e.file_name().into_string().ok())
-        .filter(|n| crate::discovery::is_valid_name(n))
+        .filter(|n| crate::discovery::is_valid_ns_name(n))
         .map(|n| crate::discovery::Command {
             path: cdir.join(&n),
             name: n,
@@ -105,9 +105,10 @@ pub fn tree_commands(tree: &str, dir: &Path) -> Vec<crate::discovery::Command> {
     v
 }
 
-/// そのツリーの1コマンドを引く。名前の制約はコマンドと同一(§2.6)。
+/// そのツリーの1コマンドを引く。名前の字面の制約は §2.6 と同じだが、
+/// 予約語は弾かない(名前空間の中に組み込みは居ない — §9.7)。
 pub fn tree_command(tree: &str, dir: &Path, name: &str) -> Option<crate::discovery::Command> {
-    if !crate::discovery::is_valid_name(name) {
+    if !crate::discovery::is_valid_ns_name(name) {
         return None;
     }
     let root = tree_root(dir);
