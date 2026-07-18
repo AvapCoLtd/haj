@@ -171,7 +171,7 @@ fn main() {
         // 「どの環境変数を読むのか」はコマンドの中身の知識なので、コアは聞くだけ。SPEC §4.4。
         "env" => {
             let Some(target) = rest.first() else {
-                die("使い方: haj env <コマンド> / haj env run <タスク>");
+                die("使い方: haj env <コマンド> / haj env run [<タスク>] / haj env <ツリー名> [<名前>]");
             };
             // タスク(SPEC §9.6): haj env run <名前> — --haj-env の中継はコマンドと同じ
             if target == "run" {
@@ -286,10 +286,18 @@ fn list_tree_commands(tree_name: &str, dir: &std::path::Path) -> ! {
     std::process::exit(0);
 }
 
-/// `haj env <ツリー名> <名前>`(SPEC §9.7)。
+/// `haj env <ツリー名> [<名前>]`(SPEC §9.7)。名前なしは全コマンドの連結 —
+/// そのツリーが読む環境変数の全景が1回で見える。
 fn tree_env(tree_name: &str, dir: &std::path::Path, name: Option<&str>) -> ! {
     let Some(name) = name else {
-        die(&format!("使い方: haj env {tree_name} <名前>"));
+        match env_sections(&tree::tree_commands(tree_name, dir)) {
+            Some(v) => print!("{v}"),
+            None => {
+                eprintln!("haj: {tree_name} に --haj-env に対応するコマンドがありません");
+                std::process::exit(1);
+            }
+        }
+        std::process::exit(0);
     };
     let Some(cmd) = tree::tree_command(tree_name, dir, name) else {
         eprintln!("haj: {tree_name} に {name} はありません");
@@ -429,10 +437,40 @@ fn task_summary(cache: &mut DescribeCache, t: &tasks::Task) -> String {
     }
 }
 
-/// `haj env run <名前>`(SPEC §9.6)。
+/// 複数コマンドの `--haj-env` を `# ==== <名前> ====` の節で連結する(SPEC §9.6 / §9.7)。
+/// 応答しないコマンドは黙って飛ばす(何も足せないため)。出力は --env-file に
+/// 渡せる形式のまま。1つも応答しなければ None。
+fn env_sections(cmds: &[Command]) -> Option<String> {
+    let mut out = String::new();
+    for c in cmds {
+        if let Some(v) = contract::env_vars(c) {
+            if !out.is_empty() {
+                out.push('\n');
+            }
+            out.push_str(&format!("# ==== {} ====\n{v}\n", c.name));
+        }
+    }
+    (!out.is_empty()).then_some(out)
+}
+
+/// `haj env run [<名前>]`(SPEC §9.6)。名前なしは全タスクの連結。
 fn task_env(name: Option<&str>) -> ! {
     let Some(name) = name else {
-        die("使い方: haj env run <タスク>");
+        let files: Vec<Command> = tasks::list()
+            .into_iter()
+            .filter_map(|t| match t {
+                tasks::Task::File(cmd) => Some(cmd),
+                tasks::Task::Decl { .. } => None, // 宣言は委譲であって環境変数を持たない
+            })
+            .collect();
+        match env_sections(&files) {
+            Some(v) => print!("{v}"),
+            None => {
+                eprintln!("haj: --haj-env に対応するタスクがありません");
+                std::process::exit(1);
+            }
+        }
+        std::process::exit(0);
     };
     match tasks::lookup(name) {
         Some(tasks::Task::File(cmd)) => match contract::env_vars(&cmd) {
