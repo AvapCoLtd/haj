@@ -2176,3 +2176,54 @@ fn ツリー名は探索より手前でエイリアスより後() {
         "エイリアスがツリー名に負けている"
     );
 }
+
+// ---- env の集約(SPEC §9.6 / §9.7): 名前を省くと全コマンドの --haj-env を連結 ----
+
+#[test]
+fn envは名前を省くと全コマンドのhaj_envを節で連結する() {
+    let sb = Sandbox::new("env-aggregate");
+    let cp = sb.path("nonexistent");
+    let cp = cp.to_str().unwrap();
+
+    // ツリー: install は対応、update は非対応(黙って飛ばす)
+    let remote = git_remote(&sb, "remote/ext");
+    let with_env = "#!/bin/sh\ncase \"$1\" in\n  --haj-describe) echo x; exit 0 ;;\n  --haj-env) printf '%s\\n' '# 配置先' 'EXT_DIR=/tmp/x'; exit 0 ;;\nesac\n";
+    let without_env =
+        "#!/bin/sh\ncase \"$1\" in --haj-describe) echo y; exit 0 ;; esac\necho RUN\n";
+    let dir = sb.dir.join("remote/ext/commands");
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(dir.join("install"), with_env).unwrap();
+    fs::write(dir.join("update"), without_env).unwrap();
+    for n in ["install", "update"] {
+        fs::set_permissions(dir.join(n), fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    sb.write("remote/ext/config", "name = ext\nexpose = namespace\n");
+    commit_all(&remote, "ext");
+    let out = sb.haj(&sb.dir, cp, &["tree", "install", remote.to_str().unwrap()]);
+    assert!(out.status.success());
+
+    let env = stdout(&sb.haj(&sb.dir, cp, &["env", "ext"]));
+    assert!(
+        env.contains("# ==== install ====") && env.contains("EXT_DIR=/tmp/x"),
+        "ツリーの集約が出ない:\n{env}"
+    );
+    assert!(
+        !env.contains("==== update ===="),
+        "非対応コマンドの節が出ている:\n{env}"
+    );
+
+    // タスク: haj env run(名前なし)も同じ連結
+    let tdir = sb.dir.join("proj/.haj/tasks");
+    fs::create_dir_all(&tdir).unwrap();
+    fs::write(tdir.join("build"), with_env).unwrap();
+    fs::set_permissions(tdir.join("build"), fs::Permissions::from_mode(0o755)).unwrap();
+    let env = stdout(&sb.haj(&sb.path("proj"), cp, &["env", "run"]));
+    assert!(
+        env.contains("# ==== build ====") && env.contains("EXT_DIR=/tmp/x"),
+        "タスクの集約が出ない:\n{env}"
+    );
+
+    // どれも対応していなければエラー
+    let out = sb.haj(&sb.dir, cp, &["env", "run"]);
+    assert_eq!(out.status.code(), Some(1), "外で run 集約が通っている");
+}
