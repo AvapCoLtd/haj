@@ -83,10 +83,43 @@ _haj() {
     return
   fi
 
+  # ファイル補完の指示(SPEC.md 4.3): ファイルシステムの補完はシェルにしか
+  # できないので、コマンドが1行目で指示する。
+  #   @files                → ファイルとディレクトリ (_files)
+  #   @files<TAB><glob>...  → glob(タブ区切り、shの書式)に合うファイルだけ
+  #   @dirs                 → ディレクトリのみ (_directories)
+  # 指示行の後に続く行は、通常の候補として併せて出す。
+  # (@delegate と違い words は組み替えないので、末尾スペースの罠は無い —
+  #  _files はカーソル語を compstate から読む)
+  local directive=''
+  case ${cands[1]} in
+    @files|@files$'\t'*|@dirs)
+      directive=${cands[1]}
+      cands=("${(@)cands[2,-1]}")
+      ;;
+    @*)
+      # 未知の指示は候補として表示しない(SPEC.md §6 — 将来の指示に黙って耐える)。
+      # 指示行だけ捨て、続く行は通常の候補として出す
+      cands=("${(@)cands[2,-1]}")
+      ;;
+  esac
+
+  local ret=1
+  case $directive in
+    @dirs) _directories && ret=0 ;;
+    @files) _files && ret=0 ;;
+    @files$'\t'*)
+      # タブ区切りの glob を _files -g の空白区切りに並べ替える
+      local -a globs
+      globs=(${(ps:\t:)directive})
+      _files -g "${(j: :)globs[2,-1]}" && ret=0
+      ;;
+  esac
+
   # 丸括弧だけの1行は候補ではなく説明(SPEC.md 4.3)
   if (( ${#cands} == 1 )) && [[ ${cands[1]} == \(*\) ]]; then
     _message "${${cands[1]#\(}%\)}"
-    return
+    return 0
   fi
 
   # "名前<TAB>説明" の行は説明つき候補として出す(`haj run <TAB>` のタスク一覧など)。
@@ -100,8 +133,8 @@ _haj() {
     fi
   done
 
-  (( ${#described} )) || return 1
-  _describe -t values "haj ${words[i]}" described
+  (( ${#described} )) && _describe -t values "haj ${words[i]}" described && ret=0
+  return ret
 }
 
 # fpath に置かれた場合(#compdef 経由の autoload)は補完関数として呼ばれる。

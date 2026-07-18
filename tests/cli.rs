@@ -1582,6 +1582,16 @@ fn completionは補完スクリプトを出す() {
     let bash = stdout(&sb.haj(&sb.dir, cp, &["completion", "bash"]));
     assert!(bash.contains("complete -F"), "bash補完ではない:\n{bash}");
 
+    // ファイル補完の指示(SPEC §4.3)を両シェルのスクリプトが処理する
+    assert!(
+        s.contains("@files") && s.contains("_files") && s.contains("_directories"),
+        "zsh補完が @files / @dirs を処理していない:\n{s}"
+    );
+    assert!(
+        bash.contains("@files") && bash.contains("compgen -d"),
+        "bash補完が @files / @dirs を処理していない:\n{bash}"
+    );
+
     // 未対応シェルと引数なしは使い方エラー
     assert_eq!(
         sb.haj(&sb.dir, cp, &["completion", "fish"]).status.code(),
@@ -1689,6 +1699,42 @@ fn execの補完はそのコマンド自身へ委譲する() {
         help.contains("OCI CLI を起動する"),
         "helpにdescが無い:\n{help}"
     );
+}
+
+#[test]
+fn ファイル補完の指示はコアが素通しで届ける() {
+    // @files / @dirs(SPEC §4.3)はシェルへの指示。コアは解釈せず、
+    // --haj-complete の出力をそのままシェル補完スクリプトへ渡す(SPEC §6)。
+    let sb = Sandbox::new("files-directive");
+    sb.command(
+        "sys",
+        "transcode",
+        r#"#!/bin/sh
+case "$1" in
+  --haj-describe) echo "動画を変換する"; exit 0 ;;
+  --haj-complete)
+    shift
+    case $# in
+      0) printf '@files\t*.mp4\t*.mkv\n--force\n' ;;  # 1語目: 入力 + 通常の候補
+      1) echo '@dirs' ;;                              # 2語目: 出力先
+    esac
+    exit 0 ;;
+esac
+"#,
+    );
+
+    let cp = sb.path("sys/commands");
+    let cp = cp.to_str().unwrap();
+
+    let first = stdout(&sb.haj(&sb.dir, cp, &["__complete", "transcode"]));
+    assert_eq!(
+        first.lines().collect::<Vec<_>>(),
+        ["@files\t*.mp4\t*.mkv", "--force"],
+        "指示が素通しになっていない"
+    );
+
+    let second = stdout(&sb.haj(&sb.dir, cp, &["__complete", "transcode", "in.mp4"]));
+    assert_eq!(second.trim(), "@dirs");
 }
 
 #[test]
