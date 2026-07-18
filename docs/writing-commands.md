@@ -95,6 +95,19 @@ echo "本処理"
 --haj-complete) shift; [ $# -eq 1 ] && echo "(新しいマイグレーションの名前)"; exit 0 ;;
 ```
 
+パスを取る引数では、1行目に `@files` / `@dirs` を返すとシェルがファイル補完をする
+(glob はタブ区切りで複数、sh の書式。指示行の後に続く行は通常の候補として併せて出る):
+
+```sh
+# transcode <src> <out_dir> — 1語目は動画ファイル、2語目は出力先ディレクトリ
+--haj-complete) shift
+  case $# in
+    0) printf '@files\t*.mp4\t*.mkv\t*.mov\n' ;;
+    1) echo '@dirs' ;;
+  esac
+  exit 0 ;;
+```
+
 ## 4. コアから渡されるもの
 
 | 変数 | 意味 |

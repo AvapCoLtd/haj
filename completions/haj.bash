@@ -39,16 +39,67 @@ _haj_complete() {
       -*) cands="-C --secret --env-file --secret-file" ;;
       *)  cands="$(haj __complete "${COMP_WORDS[@]:1:COMP_CWORD-1}" 2>/dev/null | cut -f1)" ;;
     esac
-  else
-    # サブコマンド以降。入力済みの語を(フラグ込みで)素通しで core へ。
-    # bashは説明文を表示できないので、"名前<TAB>説明" の行は名前だけ使う
-    local words=("${COMP_WORDS[@]:1:COMP_CWORD-1}")
-    cands="$(haj __complete "${words[@]}" 2>/dev/null | cut -f1)"
-    # 丸括弧だけの説明行は候補ではない(SPEC.md 4.3)
-    case "$cands" in
-      \(*\)) return 0 ;;
-    esac
+    mapfile -t COMPREPLY < <(compgen -W "$cands" -- "$cur")
+    return 0
   fi
+
+  # サブコマンド以降。入力済みの語を(フラグ込みで)素通しで core へ。
+  local words=("${COMP_WORDS[@]:1:COMP_CWORD-1}")
+  local out first
+  out="$(haj __complete "${words[@]}" 2>/dev/null)"
+  first="${out%%$'\n'*}"
+
+  # 1行目の @ 始まりはシェルへの指示(SPEC.md 4.3, §6)
+  case "$first" in
+    '@files'|$'@files\t'*|'@dirs')
+      # ファイル補完の指示:
+      #   @files                → ファイルとディレクトリ
+      #   @files<TAB><glob>...  → glob(タブ区切り、shの書式)に合うファイルだけ
+      #   @dirs                 → ディレクトリのみ
+      # 指示行の後に続く行は、通常の候補として併せて出す
+      local f g
+      if [ "$first" = '@dirs' ]; then
+        mapfile -t COMPREPLY < <(compgen -d -- "$cur")
+      else
+        local -a globs=()
+        if [ "$first" != '@files' ]; then
+          IFS=$'\t' read -r -a globs <<<"$first"
+          globs=("${globs[@]:1}")
+        fi
+        while IFS= read -r f; do
+          [ -n "$f" ] || continue
+          if [ -d "$f" ] || [ "${#globs[@]}" -eq 0 ]; then
+            COMPREPLY+=("$f")
+          else
+            # glob はファイル名(パスの最後の要素)に対して照合する
+            for g in "${globs[@]}"; do
+              case "${f##*/}" in $g) COMPREPLY+=("$f"); break ;; esac
+            done
+          fi
+        done < <(compgen -f -- "$cur")
+      fi
+      compopt -o filenames 2>/dev/null
+      # 指示行の後の行は通常の候補(名前だけ使う)
+      local rest
+      rest="$(printf '%s\n' "$out" | tail -n +2 | cut -f1)"
+      if [ -n "$rest" ]; then
+        local -a extra=()
+        mapfile -t extra < <(compgen -W "$rest" -- "$cur")
+        COMPREPLY+=("${extra[@]}")
+      fi
+      return 0 ;;
+    '@'*)
+      # @delegate と未知の指示は候補として表示しない(SPEC.md §6)。
+      # bash では他コマンドの補完へ安全に委譲できないので候補なし
+      return 0 ;;
+  esac
+
+  # bashは説明文を表示できないので、"名前<TAB>説明" の行は名前だけ使う
+  cands="$(printf '%s\n' "$out" | cut -f1)"
+  # 丸括弧だけの説明行は候補ではない(SPEC.md 4.3)
+  case "$cands" in
+    \(*\)) return 0 ;;
+  esac
 
   mapfile -t COMPREPLY < <(compgen -W "$cands" -- "$cur")
 }
