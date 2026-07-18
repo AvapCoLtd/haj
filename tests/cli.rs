@@ -2271,3 +2271,19 @@ fn ツリー名前空間の中でも予約語の名前が使える() {
     let out = sb.haj(&sb.dir, cp, &["tree", "list"]);
     assert!(stdout(&out).contains("gen"), "組み込み tree が奪われた");
 }
+
+#[test]
+fn sigpipeは既定に戻してから実行される() {
+    // Rust 既定の「SIGPIPE 無視」を exec した子に継がせない。
+    // 無視のままだと kill -13 は no-op になり exit 0 で戻ってくる。
+    use std::os::unix::process::ExitStatusExt;
+    let sb = Sandbox::new("sigpipe");
+    let cp = sb.path("nonexistent");
+    let out = sb.haj(&sb.dir, cp.to_str().unwrap(), &["sh", "kill -13 $$"]);
+    assert_eq!(
+        out.status.signal(),
+        Some(13),
+        "SIGPIPE が既定に戻っていない (exit: {:?})",
+        out.status.code()
+    );
+}
