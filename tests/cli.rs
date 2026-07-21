@@ -50,6 +50,7 @@ impl Sandbox {
             .env("HAJ_COMMAND_PATH", command_path)
             .env("HAJ_NO_CACHE", "1") // テスト間でキャッシュを共有しない
             .env("HOME", &self.dir) // ユーザーの設定を汚さない
+            .env_remove("XDG_CONFIG_HOME") // ホストの XDG 設定に依存しない
             .output()
             .unwrap()
     }
@@ -2331,5 +2332,101 @@ fn sigpipeは既定に戻してから実行される() {
         Some(13),
         "SIGPIPE が既定に戻っていない (exit: {:?})",
         out.status.code()
+    );
+}
+
+#[test]
+fn 起動ディレクトリとユーザー設定パスが渡る() {
+    let sb = Sandbox::new("runtime-env");
+    sb.command(
+        "sys",
+        "where",
+        &conforming(
+            "位置",
+            "",
+            "",
+            "echo \"start=$HAJ_START_DIR cfg=$HAJ_USER_CONFIG\"",
+        ),
+    );
+    fs::create_dir_all(sb.path("proj/.haj")).unwrap();
+    sb.write("proj/.haj/config", "name = myapp\n");
+
+    let cp = sb.path("sys/commands");
+    let cp = cp.to_str().unwrap();
+
+    // getcwd は symlink を解決するので、期待値も canonicalize で合わせる
+    let start = sb.dir.canonicalize().unwrap().display().to_string();
+
+    // -C 無し: HAJ_START_DIR は cwd と一致する
+    let out = sb.haj(&sb.dir, cp, &["where"]);
+    let expect_cfg = sb.path(".config/haj/config").display().to_string();
+    assert_eq!(
+        stdout(&out).trim(),
+        format!("start={start} cfg={expect_cfg}"),
+        "実行時変数が注入されていない"
+    );
+
+    // -C あり: HAJ_START_DIR は移動**前**の場所を指す(cwd は移動後)
+    let out = sb.haj(&sb.dir, cp, &["-C", "proj", "where"]);
+    assert_eq!(
+        stdout(&out).trim(),
+        format!("start={start} cfg={expect_cfg}"),
+        "-C 適用前の起動ディレクトリになっていない"
+    );
+
+    // 呼び出し元の残留値は上書きされる(親 haj の値を継がない)
+    let out = Command::new(env!("CARGO_BIN_EXE_haj"))
+        .args(["where"])
+        .current_dir(&sb.dir)
+        .env("HAJ_COMMAND_PATH", cp)
+        .env("HAJ_NO_CACHE", "1")
+        .env("HOME", &sb.dir)
+        .env_remove("XDG_CONFIG_HOME")
+        .env("HAJ_START_DIR", "/stale/value")
+        .output()
+        .unwrap();
+    assert!(
+        stdout(&out).contains(&format!(
+            "start={}",
+            sb.dir.canonicalize().unwrap().display()
+        )),
+        "残留した HAJ_START_DIR が上書きされていない: {}",
+        stdout(&out)
+    );
+}
+
+#[test]
+fn 規約フックにも実行時変数が渡る() {
+    let sb = Sandbox::new("runtime-env-hook");
+    sb.command(
+        "sys",
+        "envy",
+        "#!/bin/sh\ncase \"$1\" in\n  --haj-describe) echo \"env実験\"; exit 0 ;;\n  --haj-env) echo \"SEEN=$HAJ_START_DIR\"; exit 0 ;;\nesac\n",
+    );
+    let cp = sb.path("sys/commands");
+    let out = sb.haj(&sb.dir, cp.to_str().unwrap(), &["env", "envy"]);
+    assert!(
+        stdout(&out).contains(&format!(
+            "SEEN={}",
+            sb.dir.canonicalize().unwrap().display()
+        )),
+        "--haj-env フックに HAJ_START_DIR が渡っていない: {}",
+        stdout(&out)
+    );
+}
+
+#[test]
+fn sh委譲にも実行時変数が渡る() {
+    let sb = Sandbox::new("runtime-env-sh");
+    let cp = sb.path("nonexistent");
+    let out = sb.haj(
+        &sb.dir,
+        cp.to_str().unwrap(),
+        &["sh", "--", "echo", "S=$HAJ_START_DIR"],
+    );
+    assert!(
+        stdout(&out).contains(&format!("S={}", sb.dir.canonicalize().unwrap().display())),
+        "sh 委譲に HAJ_START_DIR が渡っていない: {}",
+        stdout(&out)
     );
 }

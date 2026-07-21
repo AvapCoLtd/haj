@@ -4,8 +4,9 @@
 //! すべてサブコマンド自身に聞く。聞き方がこの規約で、これがhajの中核。
 
 use std::io::Read;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command as Proc, Stdio};
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use crate::discovery::Command;
@@ -21,6 +22,41 @@ pub const ENV: &str = "--haj-env";
 /// `haj help` とシェルのTAB補完を巻き添えにして固める。補完は人間が
 /// キーを押すたびに走るので、ここが詰まるのは致命的に体験が悪い。
 pub const DEFAULT_HOOK_TIMEOUT_MS: u64 = 2000;
+
+/// haj が起動された時点の cwd(`-C` 適用**前**)。
+///
+/// `-C` は set_current_dir でその場で移動するため、記録しないと「ユーザーが
+/// 元居た場所」は失われる。main() の先頭(フラグ処理より前)で record する。
+static START_DIR: OnceLock<Option<PathBuf>> = OnceLock::new();
+
+/// main() の先頭で呼ぶ。`-C` の適用より前でなければ意味がない。
+pub fn record_start_dir() {
+    let _ = START_DIR.set(std::env::current_dir().ok());
+}
+
+/// コアが渡す実行時変数のうち、探索結果に依存しないもの(SPEC §3.1)。
+///
+/// `HAJ_START_DIR` は起動時 cwd(`-C` 適用前)、`HAJ_USER_CONFIG` はユーザー設定
+/// ファイルのパス(XDG 解決後。存在しなくても「読みに行く場所」を渡す)。
+/// 呼び出し元の環境に残った古い値を継がせないため、解決できないときは明示的に消す。
+pub fn apply_runtime_env(proc: &mut Proc) {
+    match START_DIR.get().and_then(|d| d.as_ref()) {
+        Some(dir) => {
+            proc.env("HAJ_START_DIR", dir);
+        }
+        None => {
+            proc.env_remove("HAJ_START_DIR");
+        }
+    }
+    match crate::config::config_dir() {
+        Some(dir) => {
+            proc.env("HAJ_USER_CONFIG", dir.join("config"));
+        }
+        None => {
+            proc.env_remove("HAJ_USER_CONFIG");
+        }
+    }
+}
 
 fn hook_timeout() -> Duration {
     let cfg = crate::config::Config::load();
@@ -51,6 +87,7 @@ pub fn hook(cmd: &Command, args: &[&str]) -> Option<String> {
         // PATH上の haj-* にはツリーが無い。前のプロセスの値が漏れないよう明示的に消す。
         proc.env_remove("HAJ_ROOT");
     }
+    apply_runtime_env(&mut proc);
 
     let mut child = proc.spawn().ok()?;
 
