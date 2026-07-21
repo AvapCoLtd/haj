@@ -39,6 +39,9 @@ fn main() {
     // 黙って死ぬ)に戻してから仕事を始める。
     reset_sigpipe();
 
+    // 起動時の cwd を `-C` の適用前に記録する(HAJ_START_DIR、SPEC §3.1)。
+    contract::record_start_dir();
+
     let mut args: Vec<String> = std::env::args().skip(1).collect();
 
     let mut deliveries: Vec<secrets::Delivery> = Vec::new();
@@ -559,6 +562,10 @@ fn apply_project_env(proc: &mut Proc) {
 fn prepare_proc(path: &std::path::Path, args: &[String], deliveries: &[secrets::Delivery]) -> Proc {
     let mut proc = Proc::new(path);
     proc.args(args);
+
+    // 実行時変数(SPEC §3.1)。全 exec 経路(サブコマンド・タスク・sh 委譲・
+    // haj exec)がここを通るので、探索結果に依存しない変数は一括で注入する。
+    contract::apply_runtime_env(&mut proc);
 
     // シークレットは**人が明示的に渡すものだけ**(SPEC §10)。環境を勝手に走査しない。
     // 書いた順に適用するので、同名の指定は後勝ち。
