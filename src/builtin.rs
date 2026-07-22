@@ -155,8 +155,10 @@ haj which [--all] <名前> — どの定義が効いているのかを見る。
         "config" => "\
 haj config — 設定の実効値と、その出所を見る。
 
-  haj config           実効値と出所の一覧
-  haj config --init    設定できる鍵と既定値をすべて、雛形として出す(全行コメント)
+  haj config                        実効値と出所の一覧
+  haj config --init                 設定できる鍵と既定値をすべて、雛形として出す(全行コメント)
+  haj config --tree <インストール名>  そのツリーインスタンスに効く設定 (tree.*) と
+                                    store の名前空間。金庫には触らない (SPEC §10.8)
 
 雛形はそのままリダイレクトすれば初期化になる:
 
@@ -263,9 +265,9 @@ haj secrets は haj secret check に改名されました (SPEC §10.6)。
         "secret" => "\
 haj secret — 宣言された秘密を引く (SPEC §10.9)。読みだけ。
 
-  haj secret get <KEY>    宣言 tree.<HAJ_TREE>.secret.<KEY> を解決して stdout へ
-  haj secret list         宣言の一覧 (KEY=<参照>。値は解決しない)
-  haj secret check        宣言と受け渡しの検証 (金庫に触らない。SPEC §10.6)
+  haj secret get <KEY>                       宣言 tree.<HAJ_TREE>.secret.<KEY> を解決して stdout へ
+  haj secret list  [--tree <インストール名>]  宣言の一覧 (KEY=<参照>。値は解決しない)
+  haj secret check [--tree <インストール名>]  宣言と受け渡しの検証 (金庫に触らない。SPEC §10.6)
 
 宣言はユーザー設定の tree.<インストール名>.secret.KEY = <参照> (SPEC §10.8)。
 「このツリーが扱える秘密の目録」であり、exec 時に何も注入されない —
@@ -277,6 +279,8 @@ haj secret — 宣言された秘密を引く (SPEC §10.9)。読みだけ。
 
 - KEY で引く。参照は受けない — 何を読めるかは宣言表が決める (capability)
 - 宣言に無い KEY はエラー。ツリーの外 (HAJ_TREE 無し) もエラー
+- list / check は人手用に --tree で対象を明示できる (金庫に触らないメタ情報
+  だから。--tree > 環境の HAJ_TREE)。get には無い — 値に触る操作は文脈のみ
 - 読みだけ。書きたい秘密は自分の store に置く (haj store put。所有の規律:
   secret = 読む (他所の物も含む) / store = 読み書き (自分の物だけ))"
             .to_string(),
@@ -362,13 +366,14 @@ pub fn complete(name: &str, words: &[String]) -> Vec<String> {
                 Vec::new()
             }
         }
-        "config" => {
-            if words.is_empty() {
-                vec!["--init".to_string()]
-            } else {
-                Vec::new()
-            }
-        }
+        "config" => match words.last().map(String::as_str) {
+            None => vec!["--init".to_string(), "--tree".to_string()],
+            Some("--tree") => crate::tree::installed()
+                .into_iter()
+                .map(|(n, _)| n)
+                .collect(),
+            _ => Vec::new(),
+        },
         // 通常は main::complete が run を先に処理する。ここに来るのは展開済みの
         // 結果がまた run だった場合などの縁 — タスク名を出すだけにする。
         "run" => {

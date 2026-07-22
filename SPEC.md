@@ -11,6 +11,8 @@ Python でも `haj` から等しく扱われる。逆に、コアはこの契約
 - v5: 予約語 `secret` を追加(`haj secret` — §10.9)。`tree.<名前>.secret` は
   **宣言**(capability)へ — 注入は廃止し、秘密は常に pull(§10.8)。
   `haj secrets` は移行スタブに(§10.6)。`haj store` は裸の論理パスを取る(§10.10)
+  - 追記(0.34.0): `haj secret list` / `check` と `haj config` に人手用の
+    `--tree <インストール名>`(§10.9 / §10.8)。追加機能につき版は据え置き
 - v4: 予約語 `store` とツリー専用ストア `store://`(§10.7)、ツリーごとの設定注入
   `tree.<名前>.env` / `.secret`(§10.8)、`haj store`(現 §10.10)を追加。
   コアが渡す環境変数に `HAJ_TREE`(§3.1)
@@ -699,7 +701,7 @@ selfupgrade.token = vault://secret/data/haj/token
 | `haj help <名前>` | そのコマンドの `--haj-help` |
 | `haj commands` | `名前\tパス\t出自\t説明` を機械可読で列挙 |
 | `haj which [--all] <名前>` | 探索で勝っている実行ファイルのパス(`--all` で隠れているものも) |
-| `haj config [--init]` | 設定の実効値と出所。`--init` は雛形を出す(§8) |
+| `haj config [--init \| --tree <インストール名>]` | 設定の実効値と出所。`--init` は雛形、`--tree` はそのインスタンスに効く設定(§10.8) |
 | `haj selfupgrade` | コア自身の更新(§9.1) |
 | `haj secret <動詞> ...` | 宣言された秘密を引く: get / list / check(§10.9)。check は受け渡しの事前確認も(§10.6) |
 | `haj store <動詞> ...` | 自ツリーのストアの読み書きと認証: get / put / login / status(§10.10) |
@@ -1280,11 +1282,14 @@ $ haj --secret DB_PASS=vault://secret/data/db/password --env-file ./mig.env secr
 (平文の宣言)はここでエラーとして見える。
 
 ```console
-$ HAJ_TREE=hajime haj secret check
+$ haj secret check --tree hajime
  宣言 (tree.hajime.secret.*):
    CLIENT_SECRET  → vault://secret/data/google/oauth/client_secret
    MM_TOKEN       → store://token  (→ vault://secret/data/users/alice/trees/hajime/token)
 ```
+
+対象の明示は `--tree <インストール名>`(人手用 — §10.9)か、環境の `HAJ_TREE`
+(ツリーのコマンドの中ではコアが注入している)。`--tree` が手前。
 
 ストア参照の写像は手元の設定だけで決まる — どちらの検証も金庫には触らない。
 ツリー文脈が無ければ写像の形(`<prefix>/trees/<HAJ_TREE>/...`)だけを示す。
@@ -1419,6 +1424,11 @@ LONG_TX_SEC=60
 出力は従来どおり `--env-file` にそのまま渡せる(§4.4)。**秘密の目録は env とは
 別物**になったので、`haj env` ではなく `haj secret list`(§10.9)が受け持つ。
 
+**そのインスタンスに効く設定の全景**は `haj config --tree <インストール名>` で
+一覧できる(人手の点検用): `.env` は実効値と出所(シェル環境 / 設定ファイル)、
+`.secret` は**参照のまま**、store の名前空間(§10.7 の写像先)も添える。
+`haj secret list` / `check` と同じく、金庫には触らない。
+
 ### 10.9 `haj secret` — 宣言を引く(読みだけ)
 
 サブコマンドが金庫を**直接**読むと、接続と認証の知識(アドレス・認証方式・
@@ -1426,9 +1436,9 @@ LONG_TX_SEC=60
 ただし解決するのは**宣言表(§10.8)にある参照だけ**である。
 
 ```
-haj secret get <KEY>    # 宣言 tree.<HAJ_TREE>.secret.<KEY> を解決して stdout へ
-haj secret list         # 宣言の一覧(KEY=<参照>。値は解決しない)
-haj secret check        # 宣言と受け渡しの検証(§10.6。金庫に触らない)
+haj secret get <KEY>                       # 宣言 tree.<HAJ_TREE>.secret.<KEY> を解決して stdout へ
+haj secret list  [--tree <インストール名>]  # 宣言の一覧(KEY=<参照>。値は解決しない)
+haj secret check [--tree <インストール名>]  # 宣言と受け渡しの検証(§10.6。金庫に触らない)
 ```
 
 ```sh
@@ -1439,6 +1449,13 @@ client_secret=$(haj secret get CLIENT_SECRET)
 - **KEY で引く。参照は受けない。** 何を読めるかは宣言表が決める(capability)。
   ツリーのコードには物理パスも `store://` も書かれず、宣言表を**迂回する口が無い**
 - 文脈は**自分の環境の `HAJ_TREE`**(§10.10 と同じ)。ツリーの外ではエラー
+- **`list` / `check` だけは人手用の `--tree <インストール名>` で対象を明示できる**
+  (人手の点検は日常の操作 — `HAJ_TREE=` の前置きを覚えさせない)。明示は環境より
+  手前: `--tree` > 環境の `HAJ_TREE`(§10.8 の「その場の明示が常に勝つ」と同じ並び)。
+  **`get` には無い** — 値に触る操作の対象切り替えを argv で気軽にさせない
+  (取り違えたツリーの秘密を読む事故)。`list` / `check` は金庫に触らない
+  **読み取りメタ情報**(参照は秘密ではない — §10.6)だから、この口が許される。
+  `get` の人手は従来どおり `HAJ_TREE=<インストール名>` の明示で(§10.10)
 - 宣言に無い KEY はエラー(宣言済みの KEY を列挙して案内する。fail-fast — §10.5)
 - `get` の出力は値そのもの+改行1つ(`$(...)` が改行を落とす)。値の末尾の改行の
   扱いは §10.4 と同じ
