@@ -1309,12 +1309,12 @@ fn secretゲットは宣言のstore参照を自ツリーの名前空間で解決
         stderr(&out)
     );
 
-    // 文脈なしはエラー
+    // ツリーの外では user 域が目録になる(相補)— tree の宣言には届かない
     let out = sb.haj(&cp, &["secret", "get", "HAJ_T_VALUE"], &[("USER", "alice")]);
     assert_eq!(out.status.code(), Some(1));
     assert!(
-        stderr(&out).contains("HAJ_TREE"),
-        "文脈の案内が無い: {}",
+        stderr(&out).contains("user.secret"),
+        "user 域の案内が無い: {}",
         stderr(&out)
     );
 }
@@ -1803,9 +1803,14 @@ fn secretリストは宣言の目録を参照のまま出す() {
         "list が金庫に触っている"
     );
 
-    // 文脈なしはエラー
+    // ツリーの外の list は user 域を見る(この設定には無いので案内)
     let out = sb.haj(&cp, &["secret", "list"], &[]);
-    assert_eq!(out.status.code(), Some(1));
+    assert!(out.status.success());
+    assert!(
+        stdout(&out).contains("user.secret"),
+        "user 域を見ていない:\n{}",
+        stdout(&out)
+    );
 }
 
 #[test]
@@ -1923,13 +1928,13 @@ fn secretのlistとcheckはtreeフラグで対象を明示できる() {
         stdout(&out)
     );
 
-    // 文脈なしの案内は --tree を教える
+    // ツリーの外の list は user 域を見る(相補 — tree の宣言は出ない)
     let out = sb.haj(&cp, &["secret", "list"], &[]);
-    assert_eq!(out.status.code(), Some(1));
+    assert!(out.status.success());
+    let s = stdout(&out);
     assert!(
-        stderr(&out).contains("--tree"),
-        "--tree の案内が無い: {}",
-        stderr(&out)
+        s.contains("user.secret") && !s.contains("A_KEY") && !s.contains("B_KEY"),
+        "user 域になっていない:\n{s}"
     );
 }
 
@@ -2002,6 +2007,198 @@ fn configのtreeフラグはインスタンスの設定と名前空間を出す(
     assert!(
         stdout(&out).contains("設定はありません"),
         "空の案内が無い:\n{}",
+        stdout(&out)
+    );
+}
+
+// ---- 0.38.0: haj secret file と user.secret.*(SPEC §10.8 / §10.9) ----
+
+#[test]
+fn user域の宣言はツリーの外でだけ引ける() {
+    let sb = Sandbox::new("user-secret");
+    let vault = sb.fake_vault();
+    let cp = sb.dir.join("nonexistent").display().to_string();
+    sb.write_file(
+        ".config/haj/config",
+        "user.secret.OCI_KEY = vault://secret/data/oci/private_key\n",
+    );
+
+    // ツリーの外(HAJ_TREE なし)で解決できる
+    let out = sb.haj(
+        &cp,
+        &["secret", "get", "OCI_KEY"],
+        &[
+            ("HAJ_VAULT_CMD", vault.to_str().unwrap()),
+            ("USER", "alice"),
+        ],
+    );
+    assert!(out.status.success(), "stderr: {}", stderr(&out));
+    assert_eq!(stdout(&out), "s3cr3t\n");
+
+    // 相補: ツリー文脈からは user.* に届かない
+    let out = sb.haj(
+        &cp,
+        &["secret", "get", "OCI_KEY"],
+        &[
+            ("HAJ_VAULT_CMD", vault.to_str().unwrap()),
+            ("HAJ_TREE", "tools"),
+            ("USER", "alice"),
+        ],
+    );
+    assert_eq!(out.status.code(), Some(1));
+    assert!(
+        stderr(&out).contains("宣言されていません") && stderr(&out).contains("tree.tools.secret"),
+        "ツリー文脈から user.* に届いている: {}",
+        stderr(&out)
+    );
+
+    // list もツリーの外では user 域
+    let out = sb.haj(&cp, &["secret", "list"], &[]);
+    assert!(out.status.success());
+    assert!(
+        stdout(&out).contains("OCI_KEY=vault://secret/data/oci/private_key"),
+        "user 域の目録が出ない:\n{}",
+        stdout(&out)
+    );
+
+    // check もツリーの外では user 域を検証する
+    let out = sb.haj(&cp, &["secret", "check"], &[("USER", "alice")]);
+    assert!(out.status.success(), "stderr: {}", stderr(&out));
+    assert!(
+        stdout(&out).contains("宣言 (user.secret.*)") && stdout(&out).contains("OCI_KEY"),
+        "user 域の検証が出ない:\n{}",
+        stdout(&out)
+    );
+}
+
+#[test]
+fn user域の宣言にstore参照は書けない() {
+    let sb = Sandbox::new("user-secret-store");
+    let cp = sb.dir.join("nonexistent").display().to_string();
+    sb.write_file(".config/haj/config", "user.secret.TOKEN = store://token\n");
+
+    // get は明示的に拒否(ユーザーに store の名前空間は無い)
+    let out = sb.haj(&cp, &["secret", "get", "TOKEN"], &[("USER", "alice")]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(
+        stderr(&out).contains("user 域では使えません"),
+        "store:// の拒否が無い: {}",
+        stderr(&out)
+    );
+
+    // check もエラーとして見せる
+    let out = sb.haj(&cp, &["secret", "check"], &[("USER", "alice")]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(
+        stdout(&out).contains("store:// は user 域では使えません"),
+        "check に出ない:\n{}",
+        stdout(&out)
+    );
+}
+
+#[test]
+fn secretファイルは実体化してパスを出し呼ぶたび上書きする() {
+    let sb = Sandbox::new("secret-file");
+    let vault = sb.fake_vault();
+    let cp = sb.dir.join("nonexistent").display().to_string();
+    let runtime = sb.dir.join("runtime");
+    fs::create_dir_all(&runtime).unwrap();
+    sb.write_file(
+        ".config/haj/config",
+        "user.secret.OCI_KEY = vault://secret/data/oci/private_key\n",
+    );
+
+    let out = sb.haj(
+        &cp,
+        &["secret", "file", "OCI_KEY"],
+        &[
+            ("HAJ_VAULT_CMD", vault.to_str().unwrap()),
+            ("USER", "alice"),
+            ("XDG_RUNTIME_DIR", runtime.to_str().unwrap()),
+        ],
+    );
+    assert!(out.status.success(), "stderr: {}", stderr(&out));
+    let path = stdout(&out).trim().to_string();
+    assert!(
+        path.ends_with("haj/secret-files/OCI_KEY"),
+        "パスの形が違う: {path}"
+    );
+    assert_eq!(fs::read_to_string(&path).unwrap(), "s3cr3t", "中身が違う");
+    use std::os::unix::fs::PermissionsExt;
+    let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o600, "モードが 0600 でない: {mode:o}");
+    let dir_mode = fs::metadata(std::path::Path::new(&path).parent().unwrap())
+        .unwrap()
+        .permissions()
+        .mode()
+        & 0o777;
+    assert_eq!(dir_mode, 0o700, "ディレクトリが 0700 でない: {dir_mode:o}");
+
+    // 呼ぶたび上書き(同じパスに落ち着く)
+    let out2 = sb.haj(
+        &cp,
+        &["secret", "file", "OCI_KEY"],
+        &[
+            ("HAJ_VAULT_CMD", vault.to_str().unwrap()),
+            ("USER", "alice"),
+            ("XDG_RUNTIME_DIR", runtime.to_str().unwrap()),
+        ],
+    );
+    assert_eq!(stdout(&out2).trim(), path, "同じ KEY で別のパスになった");
+
+    // XDG_RUNTIME_DIR が無い環境はフォールバック(uid 付き tmp)
+    let out3 = sb.haj(
+        &cp,
+        &["secret", "file", "OCI_KEY"],
+        &[
+            ("HAJ_VAULT_CMD", vault.to_str().unwrap()),
+            ("USER", "alice"),
+        ],
+    );
+    assert!(out3.status.success(), "stderr: {}", stderr(&out3));
+    assert!(
+        stdout(&out3).contains("haj-") && stdout(&out3).contains("secret-files/OCI_KEY"),
+        "フォールバックのパスの形が違う: {}",
+        stdout(&out3)
+    );
+    let _ = fs::remove_file(stdout(&out3).trim());
+}
+
+#[test]
+fn secretファイルも宣言解決の規則はgetと同一() {
+    let sb = Sandbox::new("secret-file-rules");
+    let cp = sb.dir.join("nonexistent").display().to_string();
+    sb.write_file(
+        ".config/haj/config",
+        "user.secret.OCI_KEY = vault://secret/data/oci/private_key\n",
+    );
+
+    // 宣言に無い KEY はエラー(capability)
+    let out = sb.haj(&cp, &["secret", "file", "NOPE"], &[("USER", "alice")]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(stderr(&out).contains("宣言されていません"));
+
+    // --tree は拒否(get と同じ壁)
+    let out = sb.haj(
+        &cp,
+        &["secret", "file", "--tree", "tools", "OCI_KEY"],
+        &[("USER", "alice")],
+    );
+    assert_eq!(out.status.code(), Some(1));
+    assert!(
+        stderr(&out).contains("--tree はありません"),
+        "file の --tree 拒否が無い: {}",
+        stderr(&out)
+    );
+
+    // 補完の動詞に file が出る
+    let out = sb.haj(&cp, &["__complete", "secret"], &[]);
+    assert!(stdout(&out).contains("file"), "動詞 file が補完されない");
+    // file の後は宣言済み KEY(ツリーの外なら user 域)
+    let out = sb.haj(&cp, &["__complete", "secret", "file"], &[]);
+    assert!(
+        stdout(&out).contains("OCI_KEY"),
+        "user 域の KEY が補完されない:\n{}",
         stdout(&out)
     );
 }

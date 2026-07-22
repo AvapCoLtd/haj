@@ -13,6 +13,8 @@ Python でも `haj` から等しく扱われる。逆に、コアはこの契約
   `haj secrets` は移行スタブに(§10.6)。`haj store` は裸の論理パスを取る(§10.10)
   - 追記(0.34.0): `haj secret list` / `check` と `haj config` に人手用の
     `--tree <インストール名>`(§10.9 / §10.8)。追加機能につき版は据え置き
+  - 追記(0.38.0): `haj secret file <KEY>`(ファイルに実体化 — §10.9)と、
+    ユーザー文脈の宣言域 `user.secret.*`(§10.8)。追加機能につき版は据え置き
   - 追記(0.35.0): `haj config --tree` が実効 env(全コマンドの `--haj-env`
     節連結、既定値込み)も出す — インスタンスの全景が1コマンドで閉じる
     (§10.8)。出力の拡張につき版は据え置き
@@ -43,7 +45,7 @@ Python でも `haj` から等しく扱われる。逆に、コアはこの契約
 | ツリー | `commands/` を含むディレクトリ。サブコマンドには `HAJ_ROOT` として渡される |
 | タスク | プロジェクト局所の作業。`haj run <名前>` で呼ばれる(§9.6)。探索には乗らない |
 | ストア | エンジン(金庫)の中に haj が確保する、**ツリー・インスタンス専用**の名前空間(§10.7)。`store://` で指す |
-| 宣言 | `tree.<名前>.secret.*` — そのツリーが扱える秘密の**目録**(§10.8)。注入されず、`haj secret get` で引く |
+| 宣言 | `tree.<名前>.secret.*` / `user.secret.*` — その**文脈**が扱える秘密の**目録**(§10.8)。注入されず、`haj secret get` / `file` で引く |
 
 ---
 
@@ -662,6 +664,7 @@ haj config --init > ~/.config/haj/config
 | `store.tree.prefix` | `HAJ_STORE_TREE_PREFIX` | `secret/data/users/<ユーザー名>` | ストア `tree` の物理プレフィックス(§10.7)。書式は物理参照のパスと同じ |
 | `tree.<名前>.env.KEY` | (無し) | (無し) | ツリーごとの設定注入: 平文(§10.8)。**設定ファイル専用**(下記) |
 | `tree.<名前>.secret.KEY` | (無し) | (無し) | ツリーの秘密の**宣言**(§10.8)。注入されない — `haj secret get` で引く。**設定ファイル専用**(下記) |
+| `user.secret.KEY` | (無し) | (無し) | ユーザー文脈の秘密の**宣言**(§10.8)。ツリーの外でだけ引ける。**設定ファイル専用**(下記) |
 | `selfupgrade.github` | `HAJ_GITHUB` | `AvapCoLtd/haj` | 取得元の GitHub リポジトリ(public。認証不要)(§9.1) |
 | `selfupgrade.target` | `HAJ_TARGET` | `x86_64-unknown-linux-musl` | 取得するビルドのターゲット |
 | `selfupgrade.gitlab` | `HAJ_GITLAB` | (無し) | private な取得元を使うとき(§9.1) |
@@ -676,7 +679,7 @@ haj config --init > ~/.config/haj/config
 | `XDG_CONFIG_HOME` / `XDG_CACHE_HOME` | 置き場所そのものを決めるので、設定ファイルには書けない |
 
 逆に**設定ファイルだけのもの**(対応する環境変数が無い): `tree.<名前>.env.KEY` /
-`tree.<名前>.secret.KEY`(§10.8)。動的な鍵名(インストール名と変数名)に環境変数の
+`tree.<名前>.secret.KEY` / `user.secret.KEY`(§10.8)。動的な鍵名(インストール名と変数名)に環境変数の
 写像を発明しない — その場かぎりの上書きは、環境変数そのもの(シェル環境が tree設定に
 勝つ — §10.8)と `--secret`(§10.2)で既にできる。
 
@@ -745,7 +748,7 @@ user="${MYAPP_VAULT_USER:-$(haj config get meta.username 2>/dev/null || true)}"
 | `haj which [--all] <名前>` | 探索で勝っている実行ファイルのパス(`--all` で隠れているものも) |
 | `haj config [--init \| --tree <インストール名>]` | 設定の実効値と出所。`--init` は雛形、`--tree` はそのインスタンスに効く設定(§10.8) |
 | `haj selfupgrade` | コア自身の更新(§9.1) |
-| `haj secret <動詞> ...` | 宣言された秘密を引く: get / list / check(§10.9)。check は受け渡しの事前確認も(§10.6) |
+| `haj secret <動詞> ...` | 宣言された秘密を引く: get / file / list / check(§10.9)。check は受け渡しの事前確認も(§10.6) |
 | `haj store <動詞> ...` | 自ツリーのストアの読み書きと認証: get / put / login / status(§10.10) |
 | `haj env <名前>` | そのコマンドが読む環境変数を `KEY=value` で出す(`--haj-env` の中継。§4.4) |
 | `haj run [<名前>] [引数...]` | プロジェクトのタスクを実行する。引数なしは一覧(§9.6) |
@@ -774,7 +777,7 @@ user="${MYAPP_VAULT_USER:-$(haj config get meta.username 2>/dev/null || true)}"
    commands     コマンド一覧を機械可読で出す
    which        どの定義が効いているかを見る (--all で隠れているものも)
    selfupgrade  haj自身を更新する
-   secret       宣言された秘密を引く (get / list / check)
+   secret       宣言された秘密を引く (get / file / list / check)
    store        自ツリーのストアを読み書きする (get / put / login / status)
    env          コマンドが読む環境変数を key=value で出す (--env-file にそのまま渡せる)
    run          プロジェクトのタスクを実行する (引数なしで一覧)
@@ -1344,9 +1347,10 @@ $ haj --secret DB_PASS=vault://secret/data/db/password --env-file ./mig.env secr
  (→ が付いたものが展開されます。他は平文としてそのまま渡ります)
 ```
 
-**宣言の検証**(ツリー文脈 — 環境の `HAJ_TREE` — があるとき): 宣言(§10.8)の
-各参照の書式を検証し、`store://` には展開先の物理写像を添える。参照でない値
-(平文の宣言)はここでエラーとして見える。
+**宣言の検証**: 対象の文脈(`--tree` > 環境の `HAJ_TREE` > user 域 — §10.9)の
+宣言(§10.8)について、各参照の書式を検証し、`store://` には展開先の物理写像を
+添える。参照でない値(平文の宣言)や、user 域の `store://` は、ここでエラーとして
+見える。
 
 ```console
 $ haj secret check --tree hajime
@@ -1501,6 +1505,30 @@ LONG_TX_SEC=60
 `--haj-env` フックだけ。§4.5 の副作用禁止がここでも効く)。`--env-file` に渡せる
 素の形式が要るときは従来どおり `haj env <ツリー名>`(§9.7)。
 
+#### ユーザー文脈の宣言 — `user.secret.KEY`
+
+宣言域はツリーだけではない。**ツリーの外**(人間のシェル・個人コマンド
+`~/.config/haj/commands`・共通コマンド `$HAJ_COMMAND_PATH` など、`HAJ_TREE` の
+無い文脈)のための宣言域が `user.secret.*`:
+
+```
+# ~/.config/haj/config
+user.secret.OCI_KEY = vault://secret/data/oci/private_key
+```
+
+- **相補規則: 誰の文脈かが、引ける目録を決める。** ツリー文脈(`HAJ_TREE` あり)
+  では `tree.<名前>.secret.*` **だけ**、ツリーの外では `user.secret.*` **だけ**が
+  引ける。ツリーから `user.*` には**届かない** — clone したツリーがユーザーの
+  個人宣言を pull できたら、それは金庫の大穴になる。逆に人間・個人コマンドは
+  ツリーに成りすまさない(値まで引く人手の例外は `HAJ_TREE=<名前>` の明示 —
+  §10.10 の人の明示と同じ層)
+- 権威はユーザー設定だけ(`tree.*` と同じ規則)。ツリー・プロジェクトの config の
+  `user.*` は無視される
+- `user.secret` の参照に `store://` は書けない — store はツリーの名前空間(§10.7)
+  であり、ユーザーにその名前空間は無い。物理参照(`vault://` 等)を書く
+- `user.env` は**無い**。ツリーの外に「コアが env を注入する相手」という概念が
+  無い(人間のシェルの env は人間の持ち物)。宣言(pull)だけが要る
+
 ### 10.9 `haj secret` — 宣言を引く(読みだけ)
 
 サブコマンドが金庫を**直接**読むと、接続と認証の知識(アドレス・認証方式・
@@ -1508,7 +1536,8 @@ LONG_TX_SEC=60
 ただし解決するのは**宣言表(§10.8)にある参照だけ**である。
 
 ```
-haj secret get <KEY>                       # 宣言 tree.<HAJ_TREE>.secret.<KEY> を解決して stdout へ
+haj secret get <KEY>                       # 宣言を解決して値を stdout へ
+haj secret file <KEY>                      # 宣言を解決してファイルに実体化し、パスを stdout へ
 haj secret list  [--tree <インストール名>]  # 宣言の一覧(KEY=<参照>。値は解決しない)
 haj secret check [--tree <インストール名>]  # 宣言と受け渡しの検証(§10.6。金庫に触らない)
 ```
@@ -1516,26 +1545,40 @@ haj secret check [--tree <インストール名>]  # 宣言と受け渡しの検
 ```sh
 # ツリーのコマンドの中(HAJ_TREE はコアが注入している — §3.1)
 client_secret=$(haj secret get CLIENT_SECRET)
+
+# ツリーの外(個人コマンドや人間のシェル)— user.secret.* が目録(§10.8)
+OCI_CLI_KEY_FILE=$(haj secret file OCI_KEY) oci compute instance list ...
 ```
 
 - **KEY で引く。参照は受けない。** 何を読めるかは宣言表が決める(capability)。
-  ツリーのコードには物理パスも `store://` も書かれず、宣言表を**迂回する口が無い**
-- 文脈は**自分の環境の `HAJ_TREE`**(§10.10 と同じ)。ツリーの外ではエラー
+  コードには物理パスも `store://` も書かれず、宣言表を**迂回する口が無い**
+- **宣言域は文脈で決まる**(相補 — §10.8): 環境に `HAJ_TREE` があればそのツリーの
+  `tree.<名前>.secret.*`、無ければ `user.secret.*`。片方の文脈からもう片方の
+  目録には届かない
+- **`file` は get のファイル版**(宣言解決の規則は同一)。値を
+  `$XDG_RUNTIME_DIR/haj/secret-files/<KEY>`(tmpfs・0600・ディレクトリ 0700)に
+  書き、**パス**を stdout に出す。「ファイルで渡せ」と要求する外部 CLI 向け
+  (`--secret-file` の宣言版)。同じ KEY は呼ぶたび上書き。**掃除の API は無い** —
+  `$XDG_RUNTIME_DIR` はセッション終了(ログアウト)で消える。ssh-agent の
+  ソケットと同じ寿命観で、消し忘れという概念ごと無くす。`$XDG_RUNTIME_DIR` が
+  無い環境は `$TMPDIR/haj-<uid>/secret-files/`(0700。寿命は OS の tmp 掃除に
+  従う)にフォールバックする
 - **`list` / `check` だけは人手用の `--tree <インストール名>` で対象を明示できる**
   (人手の点検は日常の操作 — `HAJ_TREE=` の前置きを覚えさせない)。明示は環境より
-  手前: `--tree` > 環境の `HAJ_TREE`(§10.8 の「その場の明示が常に勝つ」と同じ並び)。
-  **`get` には無い** — 値に触る操作の対象切り替えを argv で気軽にさせない
-  (取り違えたツリーの秘密を読む事故)。`list` / `check` は金庫に触らない
-  **読み取りメタ情報**(参照は秘密ではない — §10.6)だから、この口が許される。
-  `get` の人手は従来どおり `HAJ_TREE=<インストール名>` の明示で(§10.10)
+  手前: `--tree` > 環境の `HAJ_TREE` > user 域(§10.8 の「その場の明示が常に勝つ」
+  と同じ並び)。**`get` / `file` には無い** —
+  値に触る操作の対象切り替えを argv で気軽にさせない(取り違えたツリーの秘密を
+  読む事故)。`list` / `check` は金庫に触らない**読み取りメタ情報**(参照は秘密では
+  ない — §10.6)だから、この口が許される。`get` / `file` の人手は従来どおり
+  `HAJ_TREE=<インストール名>` の明示で(ツリー域。user 域は素のまま — §10.10)
 - 宣言に無い KEY はエラー(宣言済みの KEY を列挙して案内する。fail-fast — §10.5)
 - `get` の出力は値そのもの+改行1つ(`$(...)` が改行を落とす)。値の末尾の改行の
   扱いは §10.4 と同じ
 - **読みだけ。** 宣言の参照先は他所の所有物でありうる(共有の金庫など)。haj から
   書く口は無い — 書きたい秘密は**自分の store**(§10.10)に置く。これが所有の規律:
   **secret = 読む(他所の物も含む)、store = 読み書き(自分の物だけ)**
-- 補完(§9.0): 動詞と、`get` には**宣言済みの KEY**(目録は手元の設定だけで
-  列挙できる — 金庫には触らない)
+- 補完(§9.0): 動詞と、`get` / `file` には**宣言済みの KEY**(目録は手元の設定
+  だけで列挙できる — 金庫には触らない)
 - `secret` は予約語(§2.6)。奪われると「get は宣言された参照しか解決しない」という
   この節の保証が破れる(偽の値の差し込み)
 

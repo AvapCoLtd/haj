@@ -48,7 +48,7 @@ pub const ALL: &[Builtin] = &[
     },
     Builtin {
         name: "secret",
-        describe: "宣言された秘密を引く (get / list / check)",
+        describe: "宣言された秘密を引く (get / file / list / check)",
     },
     Builtin {
         name: "store",
@@ -273,22 +273,29 @@ haj secrets は haj secret check に改名されました (SPEC §10.6)。
         "secret" => "\
 haj secret — 宣言された秘密を引く (SPEC §10.9)。読みだけ。
 
-  haj secret get <KEY>                       宣言 tree.<HAJ_TREE>.secret.<KEY> を解決して stdout へ
+  haj secret get <KEY>                       宣言を解決して値を stdout へ
+  haj secret file <KEY>                      宣言を解決してファイルに実体化し、パスを stdout へ
   haj secret list  [--tree <インストール名>]  宣言の一覧 (KEY=<参照>。値は解決しない)
   haj secret check [--tree <インストール名>]  宣言と受け渡しの検証 (金庫に触らない。SPEC §10.6)
 
-宣言はユーザー設定の tree.<インストール名>.secret.KEY = <参照> (SPEC §10.8)。
-「このツリーが扱える秘密の目録」であり、exec 時に何も注入されない —
-コマンドが要る瞬間に引く (pull):
+宣言域は文脈で決まる (相補。SPEC §10.8): ツリーのコマンドの中 (HAJ_TREE) は
+tree.<インストール名>.secret.KEY、外 (人間のシェル・個人/共通コマンド) は
+user.secret.KEY。exec 時に何も注入されない — 要る瞬間に引く (pull):
 
   # ツリーのコマンドの中 (HAJ_TREE はコアが注入している)
   client_secret=$(haj secret get CLIENT_SECRET)
   token=\"${MM_TOKEN:-$(haj secret get MM_TOKEN)}\"   # --secret MM_TOKEN=... が勝てる
 
+  # ツリーの外 (個人コマンドやシェル) — user.secret.* が目録
+  OCI_CLI_KEY_FILE=$(haj secret file OCI_KEY) oci ...
+
 - KEY で引く。参照は受けない — 何を読めるかは宣言表が決める (capability)
-- 宣言に無い KEY はエラー。ツリーの外 (HAJ_TREE 無し) もエラー
+- 宣言に無い KEY はエラー。ツリーから user.* には届かない (逆も)
+- file は $XDG_RUNTIME_DIR/haj/secret-files/<KEY> (0600) に書き、パスを出す。
+  同じ KEY は呼ぶたび上書き。掃除 API は無い — セッション終了で自然消滅
 - list / check は人手用に --tree で対象を明示できる (金庫に触らないメタ情報
-  だから。--tree > 環境の HAJ_TREE)。get には無い — 値に触る操作は文脈のみ
+  だから。--tree > 環境の HAJ_TREE > user 域)。get / file には無い —
+  値に触る操作は文脈のみ
 - 読みだけ。書きたい秘密は自分の store に置く (haj store put。所有の規律:
   secret = 読む (他所の物も含む) / store = 読み書き (自分の物だけ))"
             .to_string(),
