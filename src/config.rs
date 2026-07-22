@@ -276,8 +276,141 @@ fn group_title(group: &str) -> &str {
         "secrets" => "secrets: シークレット参照の解決 (SPEC §10)",
         "store" => "store: ストアの表 (v1 は予約行 tree のみ。SPEC §10.7)",
         "selfupgrade" => "selfupgrade: haj自身の更新 (SPEC §9.1)",
+        "meta" => "meta: ユーザー定義 (コアは解釈しない。SPEC §8.5)",
         other => other,
     }
+}
+
+/// `haj config get <キー>`(SPEC §8.5)— 実効値を1行で stdout へ。
+///
+/// コアが知る鍵(KEYS)は 環境変数 > 設定ファイル > 既定値。それ以外
+/// (`meta.*` / `tree.*` / `alias.*` など)はユーザー設定ファイルの値。
+/// 未設定・未知は exit 1(fail-fast — 呼び出し側の `${VAR:-...}` 定石に落ちる)。
+pub fn get_value(key: &str) -> ! {
+    let cfg = Config::load();
+    // token の平文は出さない(§8.3 の不変条件を plumbing でも破らない)。
+    // 参照なら出す — 参照は秘密ではない(§8.4)。
+    if key == "selfupgrade.token" {
+        match cfg.get_opt("HAJ_TOKEN", "selfupgrade.token") {
+            Some((v, _)) if crate::secrets::is_reference(&v) => {
+                println!("{v}");
+                std::process::exit(0);
+            }
+            Some(_) => {
+                eprintln!("haj: selfupgrade.token の平文は出せません (参照なら出ます — SPEC §8.4)");
+                std::process::exit(1);
+            }
+            None => {
+                eprintln!("haj: 未設定です: {key}");
+                std::process::exit(1);
+            }
+        }
+    }
+    if let Some((env_key, file_key, default, _)) = KEYS.iter().find(|(_, k, _, _)| *k == key) {
+        let (v, _) = cfg.get(env_key, file_key, default);
+        if v.is_empty() {
+            eprintln!("haj: 未設定です: {key}");
+            std::process::exit(1);
+        }
+        println!("{v}");
+        std::process::exit(0);
+    }
+    match cfg.map.get(key).filter(|v| !v.is_empty()) {
+        Some(v) => {
+            println!("{v}");
+            std::process::exit(0);
+        }
+        None => {
+            eprintln!("haj: 未設定です: {key}");
+            std::process::exit(1);
+        }
+    }
+}
+
+/// `haj config set <キー> <値>`(SPEC §8.5)— ユーザー設定へ書く。
+///
+/// 保存先は常にユーザー設定(人がコマンドを打つこと自体が同意 — §10.8 と
+/// 同じ層)。既存キーはその**論理行**(継続行ごと)を置換し、他の行と
+/// コメントは保つ。無ければ末尾に追記する。
+pub fn set_value(key: &str, value: &str) -> ! {
+    let valid = !key.is_empty()
+        && !key.starts_with('.')
+        && !key.ends_with('.')
+        && key
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'));
+    if !valid {
+        eprintln!("haj: キーにできません: {key} (使えるのは英数字と . _ -)");
+        std::process::exit(1);
+    }
+    let Some(path) = config_dir().map(|d| d.join("config")) else {
+        eprintln!("haj: HOME が分かりません");
+        std::process::exit(1);
+    };
+    let old = std::fs::read_to_string(&path).unwrap_or_default();
+
+    let mut out: Vec<String> = Vec::new();
+    let mut replaced = false;
+    let mut in_continuation = false;
+    let mut drop_continuation = false;
+    for raw in old.lines() {
+        // 継続の途中の行: 直前の論理行の続き。置換対象なら一緒に落とす
+        if in_continuation {
+            in_continuation = line_continues(raw);
+            if !drop_continuation {
+                out.push(raw.to_string());
+            }
+            continue;
+        }
+        in_continuation = line_continues(raw);
+        drop_continuation = false;
+        let head = match raw.find('#') {
+            Some(i) => &raw[..i],
+            None => raw,
+        };
+        let is_target = head.split_once('=').is_some_and(|(k, _)| k.trim() == key);
+        if is_target {
+            // 最初の1回だけ置換し、同じキーの残りは落とす(重複を残さない)
+            if !replaced {
+                out.push(format!("{key} = {value}"));
+                replaced = true;
+            }
+            drop_continuation = true;
+            continue;
+        }
+        out.push(raw.to_string());
+    }
+    if !replaced {
+        out.push(format!("{key} = {value}"));
+    }
+
+    if let Some(p) = path.parent() {
+        let _ = std::fs::create_dir_all(p);
+    }
+    let body = out.join("\n") + "\n";
+    if let Err(e) = std::fs::write(&path, body) {
+        eprintln!("haj: {} に書けません: {e}", path.display());
+        std::process::exit(1);
+    }
+    println!(
+        "{}: {key} = {value} ({})",
+        if replaced {
+            "置き換えました"
+        } else {
+            "設定しました"
+        },
+        path.display()
+    );
+    std::process::exit(0);
+}
+
+/// 行がコメント外の `\` で終わる = 次の行へ継続する(parse_kv と同じ規則)。
+fn line_continues(raw: &str) -> bool {
+    let head = match raw.find('#') {
+        Some(i) => &raw[..i],
+        None => raw,
+    };
+    head.trim_end().ends_with('\\')
 }
 
 /// `haj config --init` — 設定できる鍵と既定値をすべて、設定ファイルの雛形として出す。
@@ -324,10 +457,29 @@ pub fn template() {
     println!("# tree.work.env.TOKEN_OUTPUT     = store://token   # 参照もただの文字列として渡る");
     println!("# tree.work.secret.CLIENT_SECRET = vault://secret/data/myapp/client_secret");
     println!();
+    println!("# ------ meta: ユーザー定義 (コアは解釈しない。SPEC §8.5) ------");
+    println!();
+    println!("# ツリー間で共有する「本人についての値」の置き場。haj config get/set で読み書き。");
+    println!("# meta.username = <金庫でのユーザー名>   # 例: ツリーの config-init が個人パスの生成に使う");
+    println!();
     println!("# private な取得元(GitLab)を使うときのトークン (環境変数: HAJ_TOKEN)。");
     println!("# 平文でも、シークレット参照でもよい (SPEC §8.4):");
     println!("# selfupgrade.token = <トークン>");
     println!("# selfupgrade.token = vault://<マウント>/<パス>/token");
+}
+
+/// 補完用: コアが知る鍵 + ユーザー設定にある鍵(重複なし・名前順)。
+pub fn known_keys() -> Vec<String> {
+    let mut v: Vec<String> = KEYS.iter().map(|(_, k, _, _)| k.to_string()).collect();
+    v.push("selfupgrade.token".to_string());
+    let cfg = Config::load();
+    for k in cfg.map.keys() {
+        if !v.contains(k) {
+            v.push(k.clone());
+        }
+    }
+    v.sort();
+    v
 }
 
 /// `haj config` の出力。
@@ -382,6 +534,20 @@ pub fn show() {
             width = width
         ),
         None => println!("  {:width$}  (未設定)", "selfupgrade.token", width = width),
+    }
+
+    // meta.* — ユーザー定義域(§8.5)。コアは解釈しないが、あることは見せる
+    let mut metas: Vec<(&String, &String)> = cfg
+        .map
+        .iter()
+        .filter(|(k, _)| k.starts_with("meta."))
+        .collect();
+    if !metas.is_empty() {
+        metas.sort();
+        println!();
+        for (k, v) in metas {
+            println!("  {k:width$}  {v}   (設定ファイル)", width = width);
+        }
     }
 
     println!();

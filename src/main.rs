@@ -166,6 +166,25 @@ fn main() {
             // --tree はそのインスタンスに効く設定の実効値と出所(SPEC §10.8)。
             if rest.first().map(String::as_str) == Some("--init") {
                 config::template();
+            } else if rest.first().map(String::as_str) == Some("get") {
+                // plumbing(SPEC §8.5): 実効値を1行。未設定は exit 1
+                let Some(key) = rest.get(1).filter(|k| !k.is_empty()) else {
+                    die("使い方: haj config get <キー>");
+                };
+                if rest.len() > 2 {
+                    die("引数が多すぎます: haj config get <キー>");
+                }
+                config::get_value(key);
+            } else if rest.first().map(String::as_str) == Some("set") {
+                // plumbing(SPEC §8.5): ユーザー設定へ書く(人が打つこと自体が同意)
+                let (Some(key), Some(value)) = (rest.get(1).filter(|k| !k.is_empty()), rest.get(2))
+                else {
+                    die("使い方: haj config set <キー> <値>");
+                };
+                if rest.len() > 3 {
+                    die("引数が多すぎます: haj config set <キー> <値> (空白を含む値は引用符で)");
+                }
+                config::set_value(key, value);
             } else if rest.first().map(String::as_str) == Some("--tree") {
                 let Some(tree) = rest.get(1).filter(|t| !t.is_empty()) else {
                     die("--tree には値が要ります: haj config --tree <インストール名> (一覧: haj tree list)");
