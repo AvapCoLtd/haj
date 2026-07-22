@@ -2989,3 +2989,54 @@ fn config_getはtokenの平文を出さず参照なら出す() {
         "参照が出ない"
     );
 }
+
+// ---- haj help --quick(SPEC §5 / §9.5): quickref の連結 ----
+
+#[test]
+fn help_quickはコアと全ツリーのquickrefを連結しtreeを置換する() {
+    let sb = Sandbox::new("quickref");
+    let cp = sb.path("nonexistent");
+    let cp = cp.to_str().unwrap();
+
+    // quickref を持つツリー({TREE} プレースホルダ入り)
+    installed_tree(
+        &sb,
+        "tools",
+        "greet",
+        &conforming("あいさつ", "", "", "true"),
+    );
+    sb.write(
+        ".local/share/haj/trees/tools/docs/quickref.md",
+        "haj {TREE} greet <名前>    あいさつする\n",
+    );
+    // quickref を持たないツリーは黙って飛ばす
+    installed_tree(
+        &sb,
+        "plain",
+        "noop",
+        &conforming("なにもしない", "", "", "true"),
+    );
+
+    let out = sb.haj(&sb.dir, cp, &["help", "--quick"]);
+    assert!(out.status.success());
+    let s = stdout(&out);
+    assert!(s.contains("# haj quickref"), "コアの節が無い:\n{s}");
+    assert!(
+        s.contains("haj secret get") && s.contains("haj store"),
+        "コアの主要操作が無い:\n{s}"
+    );
+    assert!(s.contains("## tools"), "ツリーの見出しが無い:\n{s}");
+    assert!(
+        s.contains("haj tools greet <名前>"),
+        "{{TREE}} が置換されていない:\n{s}"
+    );
+    assert!(!s.contains("{TREE}"), "プレースホルダが残っている:\n{s}");
+    assert!(
+        !s.contains("## plain"),
+        "quickref の無いツリーが出ている:\n{s}"
+    );
+
+    // 補完に --quick が出る
+    let comp = stdout(&sb.haj(&sb.dir, cp, &["__complete", "help"]));
+    assert!(comp.contains("--quick"), "--quick が補完されない:\n{comp}");
+}

@@ -88,6 +88,7 @@ haj help [<名前>] — 使い方を表示する。
 
   haj help           現在のプロジェクトと、使えるコマンドの一覧
   haj help <名前>     そのコマンドの詳しい使い方
+  haj help --quick   コアと全ツリーの圧縮リファレンス (例文中心の一枚)
 
 一覧は各コマンドの --haj-describe を聞いて自動生成される。手で書いた一覧が
 実態とズレる、ということが起きない。"
@@ -370,6 +371,9 @@ pub fn complete(name: &str, words: &[String]) -> Vec<String> {
                 return Vec::new(); // help / env は引数1つだけ
             }
             let mut cands: Vec<String> = Vec::new();
+            if name == "help" && words.is_empty() {
+                cands.push("--quick".to_string());
+            }
             if name == "which" {
                 if words.iter().any(|w| w.starts_with('-')) {
                     // --all は指定済み。あとはコマンド名

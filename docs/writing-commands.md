@@ -142,6 +142,18 @@ echo "==> ${HAJ_PROJECT}: セットアップします (${HAJ_PROJECT_DIR})"
 
 ## 5. シークレットの受け取り方
 
+**基本は宣言 + pull**(SPEC §10.8–10.9): ユーザー設定の宣言
+(`tree.<名前>.secret.KEY` / `user.secret.KEY`)を、要る瞬間に引く:
+
+```sh
+token="${MM_TOKEN:-$(haj secret get MM_TOKEN)}"    # --secret MM_TOKEN=... が勝てる定石
+keyfile=$(haj secret file OCI_KEY)                 # ファイル前提の CLI にはパスで
+```
+
+実行時に得た秘密(トークン等)は自ツリーの store へ:
+`printf '%s' "$t" | haj store put token`(読み戻しは `haj store get token`)。
+
+フラグ(`--secret` / `--env-file`)で**その実行だけ**渡された値は、
 コマンド側は**普通に環境変数を読むだけ**でよい。参照の解決は haj がやる(SPEC §10)。
 
 ```sh
