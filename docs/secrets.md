@@ -171,6 +171,35 @@ alias.oci.desc = OCI CLI を金庫の資格情報で起動する
 
 `haj oci iam region list` — 実体はどこにも残らず、補完も `oci` 自身に委譲される。
 
+### 存在を隠蔽する(シム)
+
+素の `oci` を打っても haj 経由(=認証情報非保持)になるようにラップできる。
+自分のシェルだけでよければ zshrc / bashrc に:
+
+```sh
+alias oci='haj oci'
+```
+
+シェルの alias は対話シェルにしか効かない。**バイナリを直接実行するアプリケーション**
+にも効かせるには、PATH の先頭側にシムを置く:
+
+```sh
+cat > ~/bin/oci <<'EOF'
+#!/bin/sh
+exec haj oci "$@"
+EOF
+chmod +x ~/bin/oci
+```
+
+**このときエイリアスの `exec` は本物の絶対パスにすること**(`haj exec` は PATH を
+引くので、`exec oci` のままだとシム自身をまた拾って無限ループする。絶対パスなら
+PATH を引かない):
+
+```
+alias.oci = --secret-file OCI_CLI_KEY_FILE=vault://users/me/oci/private_key \
+            exec /usr/local/bin/oci
+```
+
 ## 注意
 
 - **シークレットは環境変数で渡すこと。** argv に展開すると `ps` から見える
