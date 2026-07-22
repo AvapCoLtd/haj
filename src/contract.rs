@@ -87,6 +87,12 @@ pub fn hook(cmd: &Command, args: &[&str]) -> Option<String> {
         // PATH上の haj-* にはツリーが無い。前のプロセスの値が漏れないよう明示的に消す。
         proc.env_remove("HAJ_ROOT");
     }
+    // インストール名(HAJ_TREE。SPEC §3.1)は本体実行と同じ規則でフックにも注入する。
+    if let crate::project::Origin::Tree(name) = &cmd.origin {
+        proc.env("HAJ_TREE", name);
+    } else {
+        proc.env_remove("HAJ_TREE");
+    }
     apply_runtime_env(&mut proc);
 
     let mut child = proc.spawn().ok()?;

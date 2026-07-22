@@ -353,6 +353,16 @@ fn exec_command(cmd: &Command, rest: &[String], deliveries: &[secrets::Delivery]
         None => proc.env_remove("HAJ_ROOT"),
     };
 
+    // インストール済みツリー由来なら、インストール名を HAJ_TREE として渡す(SPEC §3.1)。
+    // 同じツリーを別名で多重インストールしたとき、ローカル状態(トークン等)の置き場を
+    // インスタンスごとに分けるための名前。呼び出しの形(素の探索/名前空間)に依らず、
+    // インストール先のパスから決まる同じ値(= Origin::Tree のインストール名)。
+    // それ以外の出自では**消す** — 呼び出し元の環境に残った古い値を継がせない。
+    match &cmd.origin {
+        project::Origin::Tree(name) => proc.env("HAJ_TREE", name),
+        _ => proc.env_remove("HAJ_TREE"),
+    };
+
     // いま「どのプロジェクトに対して」操作しているのか。
     //
     // setup や reset は破壊的なので、どのプロジェクトが対象なのかをサブコマンド自身が
@@ -649,12 +659,14 @@ fn exec_program(prog: &str, args: Vec<String>, deliveries: &[secrets::Delivery])
 
     let mut proc = prepare_proc(&path, &args, deliveries);
 
-    // haj の外の世界のコマンドに、hajサブコマンドの顔(HAJ_ROOT / HAJ_NAME)は
-    // させない。ただし HAJ_PROJECT は「サブコマンドであること」ではなく
+    // haj の外の世界のコマンドに、hajサブコマンドの顔(HAJ_ROOT / HAJ_NAME /
+    // HAJ_TREE)はさせない。ただし HAJ_PROJECT は「サブコマンドであること」ではなく
     // 「どこに対して実行しているか」の情報なので渡す — プロジェクト・エイリアスが
     // sh へ委譲したとき(alias.hello = sh -- echo $HAJ_PROJECT)に自分の対象を
     // 名乗れないのは §2.4(素性の可視化)に反する。
-    proc.env_remove("HAJ_ROOT").env_remove("HAJ_NAME");
+    proc.env_remove("HAJ_ROOT")
+        .env_remove("HAJ_NAME")
+        .env_remove("HAJ_TREE");
     apply_project_env(&mut proc);
 
     let err = proc.exec(); // 成功すれば戻ってこない
