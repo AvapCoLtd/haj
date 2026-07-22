@@ -339,6 +339,7 @@ pub fn is_reserved(name: &str) -> bool {
             | "sh"
             | "run"
             | "selfupgrade"
+            | "secret"
             | "secrets"
             | "store"
             | "tree"
