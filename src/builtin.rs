@@ -51,6 +51,10 @@ pub const ALL: &[Builtin] = &[
         describe: "何が渡るのかを解決せずに確かめる (--check)",
     },
     Builtin {
+        name: "store",
+        describe: "ツリー専用ストアを読み書きする (get / put / login / status)",
+    },
+    Builtin {
         name: "exec",
         describe: "PATHのコマンドにシークレットを注入して実行する",
     },
@@ -285,6 +289,31 @@ haj は後始末できないので消えない。
 解決に失敗したらコマンドは実行されない (fail-fast)。詳細は SPEC.md §10。"
             .to_string(),
 
+        "store" => "\
+haj store — ツリー専用ストアの読み書きと認証 (SPEC §10.9)。
+
+  haj store get <参照>            値を stdout へ (末尾に改行1つ)
+  haj store put [--force] <参照>  stdin から値を読んで書く
+  haj store login                 エンジンにログインする (secrets.vault_login の引数)
+  haj store status                ログイン状態と実効設定 (engine / prefix / 接続先)
+
+store://<論理パス> は、そのコマンドが属するツリー専用の名前空間
+(<prefix>/trees/<HAJ_TREE>/<論理パス>) に展開される。ツリーは自分の名前を
+書かない — どの名前でインストールされても、自分のインスタンスだけを指す。
+
+  # ツリーのコマンドの中 (HAJ_TREE はコアが注入している)
+  printf '%s' \"$refresh_token\" | haj store put store://token
+  token=$(haj store get store://token)
+
+- put は stdin からだけ受ける (argv の値は ps に見える)。TTY ならエコーを切る
+- put はフィールド単位の patch。既にフィールドが在れば --force 無しでは拒否
+- シェルから直に store:// を叩くと HAJ_TREE が無いのでエラー。
+  点検・横断・移行は物理参照で: haj store get vault://<物理パス>
+
+エンジンは haj 全体で1つ (store.engine。v1 は vault のみ)。接続・認証は
+vault:// 参照と同じ機構 (secrets.vault_*) を使う。詳細は SPEC.md §10.7–10.9。"
+            .to_string(),
+
         _ => return None,
     })
 }
@@ -369,6 +398,16 @@ pub fn complete(name: &str, words: &[String]) -> Vec<String> {
                 Vec::new()
             }
         }
+        // 動詞だけ補完する。論理パスは補完しない — TAB のたびに金庫へ
+        // 問い合わせない(SPEC §10.9)。
+        "store" => match words.first().map(String::as_str) {
+            None => ["get", "put", "login", "status"]
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
+            Some("put") if words.len() == 1 => vec!["--force".to_string()],
+            _ => Vec::new(),
+        },
         _ => Vec::new(),
     }
 }

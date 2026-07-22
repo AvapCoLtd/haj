@@ -1224,3 +1224,420 @@ fn secret_fileはパス指定ならそこに0600で書く() {
     let mode = fs::metadata(&target).unwrap().permissions().mode();
     assert_eq!(mode & 0o777, 0o600, "mode が 0600 ではない: {mode:o}");
 }
+
+// ---- ツリー専用ストア(SPEC §10.7–10.9)とツリーごとの設定注入(§10.8) ----
+
+/// インストール済みツリー tools のコマンド show を置く(HAJ_T_VALUE を出す)。
+fn tree_show(sb: &Sandbox) {
+    sb.exe(
+        ".local/share/haj/trees/tools/commands/show",
+        "#!/bin/sh\ncase \"$1\" in\n  --haj-env) printf 'HAJ_T_VALUE=%s\\n' \"${HAJ_T_VALUE:-}\"; exit 0 ;;\n  --haj-*) exit 0 ;;\nesac\nprintf '%s\\n' \"$HAJ_T_VALUE\"\n",
+    );
+}
+
+/// put の経路を試す偽 vault。オブジェクト/フィールドの有無はファイルで制御し、
+/// patch / put は stdin を kv-written に写す。
+fn fake_kv(sb: &Sandbox) -> PathBuf {
+    let d = sb.dir.display().to_string();
+    sb.exe(
+        "bin/vault",
+        &format!(
+            r#"#!/bin/sh
+d="{d}"
+printf '%s\n' "$*" >> "$d/vault-calls"
+case "$1" in
+  kv)
+    case "$2" in
+      get)
+        case "$*" in
+          *-field=*) if [ -e "$d/kv-field" ]; then echo oldvalue; exit 0; else exit 2; fi ;;
+          *) if [ -e "$d/kv-object" ]; then exit 0; else exit 2; fi ;;
+        esac ;;
+      patch|put) echo "$2" > "$d/kv-verb"; cat > "$d/kv-written"; exit 0 ;;
+    esac ;;
+esac
+exit 0
+"#
+        ),
+    )
+}
+
+fn read(sb: &Sandbox, rel: &str) -> String {
+    fs::read_to_string(sb.dir.join(rel)).unwrap_or_default()
+}
+
+#[test]
+fn store参照は自ツリーの名前空間へ写像されて解決される() {
+    let sb = Sandbox::new("store-map");
+    let vault = sb.fake_vault();
+    tree_show(&sb);
+    let cp = sb.dir.join("nonexistent").display().to_string();
+
+    // tree.secret 注入で store:// を使う(文脈はツリー tools)
+    sb.write_file(
+        ".config/haj/config",
+        "tree.tools.secret.HAJ_T_VALUE = store://google-oauth/token\n",
+    );
+    let out = sb.haj(
+        &cp,
+        &["tools", "show"],
+        &[
+            ("HAJ_VAULT_CMD", vault.to_str().unwrap()),
+            ("USER", "alice"),
+        ],
+    );
+    assert!(out.status.success(), "stderr: {}", stderr(&out));
+    assert_eq!(stdout(&out).trim(), "s3cr3t");
+    let args = read(&sb, "vault-args");
+    assert!(
+        args.contains("-mount=secret")
+            && args.contains("-field=token")
+            && args.contains("users/alice/trees/tools/google-oauth"),
+        "物理写像が違う:\n{args}"
+    );
+}
+
+#[test]
+fn store参照はツリー文脈が無ければ実行前に止まる() {
+    let sb = Sandbox::new("store-noctx");
+    let cp = sb.mark_command();
+
+    let out = sb.haj(
+        &cp,
+        &["--secret", "HAJ_T_VALUE=store://token", "mark"],
+        &[("USER", "alice")],
+    );
+    assert_eq!(out.status.code(), Some(1));
+    assert!(
+        stderr(&out).contains("ツリーのコマンドの中でだけ"),
+        "案内が無い: {}",
+        stderr(&out)
+    );
+    assert!(
+        stderr(&out).contains("vault://"),
+        "物理参照での点検の案内が無い: {}",
+        stderr(&out)
+    );
+    assert!(!sb.dir.join("ran").exists(), "fail-fast していない");
+}
+
+#[test]
+fn storeゲットは環境のhaj_treeで解決して値と改行を出す() {
+    let sb = Sandbox::new("store-get");
+    let vault = sb.fake_vault();
+    let cp = sb.dir.join("nonexistent").display().to_string();
+
+    let out = sb.haj(
+        &cp,
+        &["store", "get", "store://token"],
+        &[
+            ("HAJ_VAULT_CMD", vault.to_str().unwrap()),
+            ("HAJ_TREE", "tools"),
+            ("USER", "alice"),
+        ],
+    );
+    assert!(out.status.success(), "stderr: {}", stderr(&out));
+    assert_eq!(stdout(&out), "s3cr3t\n");
+    let args = read(&sb, "vault-args");
+    assert!(
+        args.contains("users/alice/trees/tools") && args.contains("-field=token"),
+        "写像が違う:\n{args}"
+    );
+
+    // 文脈なしはエラー
+    let out = sb.haj(
+        &cp,
+        &["store", "get", "store://token"],
+        &[
+            ("HAJ_VAULT_CMD", vault.to_str().unwrap()),
+            ("USER", "alice"),
+        ],
+    );
+    assert_eq!(out.status.code(), Some(1));
+}
+
+#[test]
+fn storeプットは新規はputで既存オブジェクトはpatchで書く() {
+    let sb = Sandbox::new("store-put");
+    let vault = fake_kv(&sb);
+    let _cp = sb.dir.join("nonexistent").display().to_string();
+    let envs: Vec<(&str, String)> = vec![
+        ("HAJ_VAULT_CMD", vault.display().to_string()),
+        ("HAJ_TREE", "tools".to_string()),
+        ("USER", "alice".to_string()),
+    ];
+    let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (*k, v.as_str())).collect();
+
+    // オブジェクトが無い → kv put
+    let mut c = Command::new(env!("CARGO_BIN_EXE_haj"));
+    c.args(["store", "put", "store://token"])
+        .current_dir(&sb.dir)
+        .env("HAJ_COMMAND_PATH", "nonexistent")
+        .env("HAJ_NO_CACHE", "1")
+        .env("HOME", &sb.dir)
+        .env("XDG_CONFIG_HOME", sb.dir.join(".config"))
+        .env_remove("VAULT_ADDR")
+        .env_remove("BAO_ADDR");
+    for (k, v) in &envs {
+        c.env(k, v);
+    }
+    use std::process::Stdio;
+    c.stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = c.spawn().unwrap();
+    use std::io::Write as _;
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(b"newtoken\n")
+        .unwrap();
+    let out = child.wait_with_output().unwrap();
+    assert!(out.status.success(), "stderr: {}", stderr(&out));
+    assert_eq!(read(&sb, "kv-verb").trim(), "put", "新規は kv put のはず");
+    assert_eq!(
+        read(&sb, "kv-written"),
+        "newtoken",
+        "末尾の改行が落ちていない"
+    );
+
+    // オブジェクトはあるがフィールドは無い → kv patch
+    fs::write(sb.dir.join("kv-object"), "").unwrap();
+    let mut child = c.spawn().unwrap();
+    child.stdin.take().unwrap().write_all(b"second").unwrap();
+    let out = child.wait_with_output().unwrap();
+    assert!(out.status.success(), "stderr: {}", stderr(&out));
+    assert_eq!(
+        read(&sb, "kv-verb").trim(),
+        "patch",
+        "既存オブジェクトは patch のはず"
+    );
+
+    // フィールドもある → --force 無しでは拒否(書かない)
+    fs::write(sb.dir.join("kv-field"), "").unwrap();
+    let _ = fs::remove_file(sb.dir.join("kv-written"));
+    let mut child = c.spawn().unwrap();
+    child.stdin.take().unwrap().write_all(b"third").unwrap();
+    let out = child.wait_with_output().unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    assert!(
+        stderr(&out).contains("--force"),
+        "上書きの案内が無い: {}",
+        stderr(&out)
+    );
+    assert!(
+        !sb.dir.join("kv-written").exists(),
+        "拒否したのに書いている"
+    );
+
+    // --force なら patch で上書き
+    let mut c2 = Command::new(env!("CARGO_BIN_EXE_haj"));
+    c2.args(["store", "put", "--force", "store://token"])
+        .current_dir(&sb.dir)
+        .env("HAJ_COMMAND_PATH", "nonexistent")
+        .env("HAJ_NO_CACHE", "1")
+        .env("HOME", &sb.dir)
+        .env("XDG_CONFIG_HOME", sb.dir.join(".config"))
+        .env_remove("VAULT_ADDR")
+        .env_remove("BAO_ADDR")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    for (k, v) in &envs {
+        c2.env(k, v);
+    }
+    let mut child = c2.spawn().unwrap();
+    child.stdin.take().unwrap().write_all(b"forced").unwrap();
+    let out = child.wait_with_output().unwrap();
+    assert!(out.status.success(), "stderr: {}", stderr(&out));
+    assert_eq!(read(&sb, "kv-verb").trim(), "patch");
+    assert_eq!(read(&sb, "kv-written"), "forced");
+}
+
+#[test]
+fn tree設定のenvは無展開で注入されsecretは解決して注入される() {
+    let sb = Sandbox::new("tree-inject");
+    let vault = sb.fake_vault();
+    tree_show(&sb);
+    let cp = sb.dir.join("nonexistent").display().to_string();
+
+    // .env は store:// と書いてあっても文字列のまま(参照をデータとして渡せる)
+    sb.write_file(
+        ".config/haj/config",
+        "tree.tools.env.HAJ_T_VALUE = store://token\n",
+    );
+    let out = sb.haj(&cp, &["show"], &[("USER", "alice")]);
+    assert!(out.status.success(), "stderr: {}", stderr(&out));
+    assert_eq!(
+        stdout(&out).trim(),
+        "store://token",
+        ".env が展開されている"
+    );
+
+    // .secret は解決して注入(素の探索でも名前空間形でも)
+    sb.write_file(
+        ".config/haj/config",
+        "tree.tools.secret.HAJ_T_VALUE = vault://secret/data/x/token\n",
+    );
+    let out = sb.haj(
+        &cp,
+        &["show"],
+        &[
+            ("HAJ_VAULT_CMD", vault.to_str().unwrap()),
+            ("USER", "alice"),
+        ],
+    );
+    assert_eq!(stdout(&out).trim(), "s3cr3t", ".secret が解決されない");
+}
+
+#[test]
+fn tree設定よりシェル環境とフラグが勝つ() {
+    let sb = Sandbox::new("tree-precedence");
+    tree_show(&sb);
+    let cp = sb.dir.join("nonexistent").display().to_string();
+    sb.write_file(
+        ".config/haj/config",
+        "tree.tools.env.HAJ_T_VALUE = config-value\n",
+    );
+
+    // シェル環境 > tree設定
+    let out = sb.haj(&cp, &["show"], &[("HAJ_T_VALUE", "shell-value")]);
+    assert_eq!(stdout(&out).trim(), "shell-value");
+
+    // フラグ > シェル環境 > tree設定
+    let out = sb.haj(
+        &cp,
+        &["--secret", "HAJ_T_VALUE=flag-value", "show"],
+        &[("HAJ_T_VALUE", "shell-value")],
+    );
+    assert_eq!(stdout(&out).trim(), "flag-value");
+}
+
+#[test]
+fn tree設定のsecretに平文を書くと実行前に止まる() {
+    let sb = Sandbox::new("tree-plain-secret");
+    tree_show(&sb);
+    let cp = sb.dir.join("nonexistent").display().to_string();
+    sb.write_file(
+        ".config/haj/config",
+        "tree.tools.secret.HAJ_T_VALUE = plainpassword\n",
+    );
+    let out = sb.haj(&cp, &["show"], &[]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(
+        stderr(&out).contains("参照ではありません") && stderr(&out).contains("tree.tools.env"),
+        "案内が無い: {}",
+        stderr(&out)
+    );
+}
+
+#[test]
+fn ツリー自身のconfigのtree鍵は注入されない() {
+    let sb = Sandbox::new("tree-hijack");
+    tree_show(&sb);
+    // ツリー自身の config に tree.* を書いても効かない(盗み先の指定になるため)
+    sb.write_file(
+        ".local/share/haj/trees/tools/config",
+        "tree.tools.env.HAJ_T_VALUE = evil\n",
+    );
+    let cp = sb.dir.join("nonexistent").display().to_string();
+    let out = sb.haj(&cp, &["show"], &[]);
+    assert!(out.status.success());
+    assert_eq!(
+        stdout(&out).trim(),
+        "",
+        "ツリー config の tree.* が効いている"
+    );
+}
+
+#[test]
+fn hajエンブはtree設定の出所を注記しsecretは参照のまま出す() {
+    let sb = Sandbox::new("env-annotate");
+    tree_show(&sb);
+    let cp = sb.dir.join("nonexistent").display().to_string();
+    sb.write_file(
+        ".config/haj/config",
+        "tree.tools.env.HAJ_T_VALUE = fixed\ntree.tools.secret.HAJ_T_SECRET = vault://secret/data/x/token\n",
+    );
+    // show の --haj-env は HAJ_T_VALUE しか申告しないので、HAJ_T_SECRET も申告する版を置く
+    sb.exe(
+        ".local/share/haj/trees/tools/commands/show",
+        "#!/bin/sh\ncase \"$1\" in\n  --haj-env) printf 'HAJ_T_VALUE=%s\\nHAJ_T_SECRET=%s\\n' \"${HAJ_T_VALUE:-}\" \"${HAJ_T_SECRET:-}\"; exit 0 ;;\n  --haj-*) exit 0 ;;\nesac\ntrue\n",
+    );
+
+    let out = sb.haj(&cp, &["env", "show"], &[]);
+    assert!(out.status.success(), "stderr: {}", stderr(&out));
+    let s = stdout(&out);
+    assert!(
+        s.contains("HAJ_T_VALUE=fixed") && s.contains("# tree設定 (env)"),
+        "env の注記が無い:\n{s}"
+    );
+    assert!(
+        s.contains("HAJ_T_SECRET=vault://secret/data/x/token") && s.contains("# tree設定 (secret"),
+        "secret が参照のまま注記されていない:\n{s}"
+    );
+
+    // シェル環境が勝っている鍵の注記
+    let out = sb.haj(&cp, &["env", "show"], &[("HAJ_T_VALUE", "shell")]);
+    let s = stdout(&out);
+    assert!(
+        s.contains("HAJ_T_VALUE=shell") && s.contains("# シェル環境"),
+        "シェル環境の注記が無い:\n{s}"
+    );
+}
+
+#[test]
+fn secretsチェックはstore参照に物理写像を添える() {
+    let sb = Sandbox::new("store-check");
+    let cp = sb.dir.join("nonexistent").display().to_string();
+
+    // ツリー文脈(HAJ_TREE)があれば具体的な写像
+    let out = sb.haj(
+        &cp,
+        &["--secret", "T=store://token", "secrets", "--check"],
+        &[("HAJ_TREE", "tools"), ("USER", "alice")],
+    );
+    assert!(out.status.success());
+    let s = stdout(&out);
+    assert!(
+        s.contains("store://token")
+            && s.contains("vault://secret/data/users/alice/trees/tools/token"),
+        "写像が出ない:\n{s}"
+    );
+
+    // 文脈が無ければ形だけ(エラーにしない)
+    let out = sb.haj(
+        &cp,
+        &["--secret", "T=store://token", "secrets", "--check"],
+        &[("USER", "alice")],
+    );
+    assert!(out.status.success(), "文脈なしの --check が失敗する");
+    assert!(
+        stdout(&out).contains("<HAJ_TREE>"),
+        "写像の形が出ない:\n{}",
+        stdout(&out)
+    );
+}
+
+#[test]
+fn 規約フックにはtreeのenvだけ注入されsecretは解決されない() {
+    let sb = Sandbox::new("hook-inject");
+    // describe が HAJ_T_VALUE と HAJ_T_SECRET を出す
+    sb.exe(
+        ".local/share/haj/trees/tools/commands/show",
+        "#!/bin/sh\ncase \"$1\" in\n  --haj-describe) printf 'v=%s s=%s\\n' \"${HAJ_T_VALUE:-none}\" \"${HAJ_T_SECRET:-none}\"; exit 0 ;;\n  --haj-*) exit 0 ;;\nesac\ntrue\n",
+    );
+    let cp = sb.dir.join("nonexistent").display().to_string();
+    sb.write_file(
+        ".config/haj/config",
+        "tree.tools.env.HAJ_T_VALUE = injected\ntree.tools.secret.HAJ_T_SECRET = vault://secret/data/x/y\n",
+    );
+    // 偽 vault を置かない — フックが .secret を解決しようとすれば失敗で気づく
+    let out = sb.haj(&cp, &["tools"], &[]);
+    let s = stdout(&out);
+    assert!(
+        s.contains("v=injected s=none"),
+        "フックへの注入が仕様と違う (env だけのはず):\n{s}"
+    );
+}

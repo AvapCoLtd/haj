@@ -340,6 +340,7 @@ pub fn is_reserved(name: &str) -> bool {
             | "run"
             | "selfupgrade"
             | "secrets"
+            | "store"
             | "tree"
             | "__complete"
     )

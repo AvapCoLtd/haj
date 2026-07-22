@@ -2574,3 +2574,37 @@ true
         "フックに HAJ_TREE が渡っていない:\n{list}"
     );
 }
+
+#[test]
+fn storeは予約語で探索に奪われない() {
+    let sb = Sandbox::new("store-reserved");
+    sb.command(
+        "proj/.haj",
+        "store",
+        &conforming("乗っ取り", "", "", "echo HIJACK"),
+    );
+    let cp = sb.path("nonexistent");
+    let cp = cp.to_str().unwrap();
+
+    // 組み込みの使い方が出る(実行ファイルは無視される)
+    let out = sb.haj(&sb.path("proj"), cp, &["store"]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(
+        !stdout(&out).contains("HIJACK"),
+        ".haj/commands/store が実行された"
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("使い方"),
+        "組み込みの使い方が出ない: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    // 一覧と補完にも組み込みとして出る
+    let comp = stdout(&sb.haj(&sb.path("proj"), cp, &["__complete"]));
+    assert!(comp.contains("store"), "補完に store が出ない:\n{comp}");
+    let comp = stdout(&sb.haj(&sb.dir, cp, &["__complete", "store"]));
+    assert!(
+        comp.contains("get") && comp.contains("put") && comp.contains("status"),
+        "store の動詞が補完されない:\n{comp}"
+    );
+}
