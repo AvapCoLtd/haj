@@ -2608,3 +2608,89 @@ fn storeは予約語で探索に奪われない() {
         "store の動詞が補完されない:\n{comp}"
     );
 }
+
+#[test]
+fn config_treeは設定とstoreに続けて実効envを節連結で出す() {
+    let sb = Sandbox::new("config-tree-eff");
+    let cp = sb.path("nonexistent");
+    let cp = cp.to_str().unwrap();
+
+    // --haj-env に応答するコマンドを持つインストール済みツリー。
+    // GREETING は tree設定で注入され、TOKEN_FILE はコマンド自身の既定値が出る
+    installed_tree(
+        &sb,
+        "hajime",
+        "greet",
+        concat!(
+            "#!/bin/sh\n",
+            "case \"$1\" in\n",
+            "  --haj-describe) echo あいさつ; exit 0 ;;\n",
+            "  --haj-env)\n",
+            "    echo \"GREETING=${GREETING:-hello}\"\n",
+            "    echo \"TOKEN_FILE=${TOKEN_FILE:-/tmp/t}\"\n",
+            "    exit 0 ;;\n",
+            "esac\n",
+        ),
+    );
+    sb.write(
+        ".config/haj/config",
+        "tree.hajime.env.GREETING = やあ\n\
+         tree.hajime.secret.API_KEY = vault://secret/data/x/key\n",
+    );
+
+    let out = sb.haj(&sb.dir, cp, &["config", "--tree", "hajime"]);
+    let s = stdout(&out);
+    // 前半: 設定 (tree.*) と宣言
+    assert!(
+        s.contains("tree.hajime.env.GREETING"),
+        "env 設定が出ない:\n{s}"
+    );
+    assert!(
+        s.contains("tree.hajime.secret.API_KEY"),
+        "宣言が出ない:\n{s}"
+    );
+    // 後半: 実効 env — --haj-env の節連結。tree設定の注入もコマンドの既定値も見える
+    assert!(
+        s.contains("# ==== greet ===="),
+        "実効 env の節が出ない:\n{s}"
+    );
+    assert!(
+        s.contains("GREETING=やあ"),
+        "tree設定が実効 env に効いていない:\n{s}"
+    );
+    assert!(
+        s.contains("TOKEN_FILE=/tmp/t"),
+        "コマンド自身の既定値が出ない:\n{s}"
+    );
+    assert!(
+        s.contains("haj env hajime"),
+        "--env-file 用の素の形式への導線が無い:\n{s}"
+    );
+}
+
+#[test]
+fn config_treeは未インストールでも設定を出し実効envはその旨を言う() {
+    let sb = Sandbox::new("config-tree-ghost");
+    let cp = sb.path("nonexistent");
+    let cp = cp.to_str().unwrap();
+
+    sb.write(
+        ".config/haj/config",
+        "tree.ghost.secret.API_KEY = vault://secret/data/x/key\n",
+    );
+
+    let out = sb.haj(&sb.dir, cp, &["config", "--tree", "ghost"]);
+    let s = stdout(&out);
+    assert!(
+        s.contains("未インストール"),
+        "未インストールの注記が無い:\n{s}"
+    );
+    assert!(
+        s.contains("tree.ghost.secret.API_KEY"),
+        "設定だけの状態でも宣言が出るべき:\n{s}"
+    );
+    assert!(
+        s.contains("実効 env: (未インストールのため取得できません)"),
+        "実効 env の不在理由が出ない:\n{s}"
+    );
+}
