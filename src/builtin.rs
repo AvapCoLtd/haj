@@ -48,7 +48,7 @@ pub const ALL: &[Builtin] = &[
     },
     Builtin {
         name: "secret",
-        describe: "宣言された秘密を引く (get / file / list / check)",
+        describe: "宣言された秘密を引く (get / file / template / tmpdir / list / check)",
     },
     Builtin {
         name: "store",
@@ -275,7 +275,9 @@ haj secret — 宣言された秘密を引く (SPEC §10.9)。読みだけ。
 
   haj secret get <KEY>                       宣言を解決して値を stdout へ
   haj secret file <KEY>                      宣言を解決してファイルに実体化し、パスを stdout へ
-  haj secret list  [--tree <インストール名>]  宣言の一覧 (KEY=<参照>。値は解決しない)
+  haj secret template <KEY> [--out <パス>]   テンプレート宣言を描画して実体化し、パスを stdout へ
+  haj secret tmpdir <名前>                   名前付き管理ディレクトリ (0700) を確保してパスを stdout へ
+  haj secret list  [--tree <インストール名>]  宣言の一覧 (テンプレートは KEY=template:<パス>)
   haj secret check [--tree <インストール名>]  宣言と受け渡しの検証 (金庫に触らない。SPEC §10.6)
 
 宣言域は文脈で決まる (相補。SPEC §10.8): ツリーのコマンドの中 (HAJ_TREE) は
@@ -293,6 +295,13 @@ user.secret.KEY。exec 時に何も注入されない — 要る瞬間に引く 
 - 宣言に無い KEY はエラー。ツリーから user.* には届かない (逆も)
 - file は $XDG_RUNTIME_DIR/haj/secret-files/<KEY> (0600) に書き、パスを出す。
   同じ KEY は呼ぶたび上書き。掃除 API は無い — セッション終了で自然消滅
+- template は宣言 (user.template.KEY = <tplパス> / tree.<名前>.template.KEY) の
+  テンプレート (vault-agent 正準形 — --secret-file と同じエンジン) を描画して
+  実体化する。--out は管理領域 ($XDG_RUNTIME_DIR/haj/) 内のみ (realpath 検証)。
+  設定ディレクトリごと要求するツールへは tmpdir と組み合わせる:
+    dir=$(haj secret tmpdir glab)
+    haj secret template GLAB_CONFIG --out \"$dir/config.yml\"
+    GLAB_CONFIG_DIR=$dir exec glab \"$@\"
 - list / check は人手用に --tree で対象を明示できる (金庫に触らないメタ情報
   だから。--tree > 環境の HAJ_TREE > user 域)。get / file には無い —
   値に触る操作は文脈のみ

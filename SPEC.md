@@ -15,6 +15,8 @@ Python でも `haj` から等しく扱われる。逆に、コアはこの契約
     `--tree <インストール名>`(§10.9 / §10.8)。追加機能につき版は据え置き
   - 追記(0.38.0): `haj secret file <KEY>`(ファイルに実体化 — §10.9)と、
     ユーザー文脈の宣言域 `user.secret.*`(§10.8)。追加機能につき版は据え置き
+  - 追記(0.39.0): テンプレート宣言 `.template.KEY`(§10.8)と
+    `haj secret template` / `tmpdir`(§10.9)。追加機能につき版は据え置き
   - 追記(0.35.0): `haj config --tree` が実効 env(全コマンドの `--haj-env`
     節連結、既定値込み)も出す — インスタンスの全景が1コマンドで閉じる
     (§10.8)。出力の拡張につき版は据え置き
@@ -665,6 +667,7 @@ haj config --init > ~/.config/haj/config
 | `tree.<名前>.env.KEY` | (無し) | (無し) | ツリーごとの設定注入: 平文(§10.8)。**設定ファイル専用**(下記) |
 | `tree.<名前>.secret.KEY` | (無し) | (無し) | ツリーの秘密の**宣言**(§10.8)。注入されない — `haj secret get` で引く。**設定ファイル専用**(下記) |
 | `user.secret.KEY` | (無し) | (無し) | ユーザー文脈の秘密の**宣言**(§10.8)。ツリーの外でだけ引ける。**設定ファイル専用**(下記) |
+| `tree.<名前>.template.KEY` / `user.template.KEY` | (無し) | (無し) | テンプレート宣言(§10.8)。値は tpl ファイルパス。`haj secret template` で実体化。**設定ファイル専用**(下記) |
 | `selfupgrade.github` | `HAJ_GITHUB` | `AvapCoLtd/haj` | 取得元の GitHub リポジトリ(public。認証不要)(§9.1) |
 | `selfupgrade.target` | `HAJ_TARGET` | `x86_64-unknown-linux-musl` | 取得するビルドのターゲット |
 | `selfupgrade.gitlab` | `HAJ_GITLAB` | (無し) | private な取得元を使うとき(§9.1) |
@@ -748,7 +751,7 @@ user="${MYAPP_VAULT_USER:-$(haj config get meta.username 2>/dev/null || true)}"
 | `haj which [--all] <名前>` | 探索で勝っている実行ファイルのパス(`--all` で隠れているものも) |
 | `haj config [--init \| --tree <インストール名>]` | 設定の実効値と出所。`--init` は雛形、`--tree` はそのインスタンスに効く設定(§10.8) |
 | `haj selfupgrade` | コア自身の更新(§9.1) |
-| `haj secret <動詞> ...` | 宣言された秘密を引く: get / file / list / check(§10.9)。check は受け渡しの事前確認も(§10.6) |
+| `haj secret <動詞> ...` | 宣言された秘密を引く: get / file / template / tmpdir / list / check(§10.9)。check は受け渡しの事前確認も(§10.6) |
 | `haj store <動詞> ...` | 自ツリーのストアの読み書きと認証: get / put / login / status(§10.10) |
 | `haj env <名前>` | そのコマンドが読む環境変数を `KEY=value` で出す(`--haj-env` の中継。§4.4) |
 | `haj run [<名前>] [引数...]` | プロジェクトのタスクを実行する。引数なしは一覧(§9.6) |
@@ -777,7 +780,7 @@ user="${MYAPP_VAULT_USER:-$(haj config get meta.username 2>/dev/null || true)}"
    commands     コマンド一覧を機械可読で出す
    which        どの定義が効いているかを見る (--all で隠れているものも)
    selfupgrade  haj自身を更新する
-   secret       宣言された秘密を引く (get / file / list / check)
+   secret       宣言された秘密を引く (get / file / template / tmpdir / list / check)
    store        自ツリーのストアを読み書きする (get / put / login / status)
    env          コマンドが読む環境変数を key=value で出す (--env-file にそのまま渡せる)
    run          プロジェクトのタスクを実行する (引数なしで一覧)
@@ -1350,7 +1353,8 @@ $ haj --secret DB_PASS=vault://secret/data/db/password --env-file ./mig.env secr
 **宣言の検証**: 対象の文脈(`--tree` > 環境の `HAJ_TREE` > user 域 — §10.9)の
 宣言(§10.8)について、各参照の書式を検証し、`store://` には展開先の物理写像を
 添える。参照でない値(平文の宣言)や、user 域の `store://` は、ここでエラーとして
-見える。
+見える。テンプレート宣言(§10.8)は tpl の存在と**中の参照の構文**まで検証する
+(描画と同じ経路に空値リゾルバを差す — 金庫には触らない)。
 
 ```console
 $ haj secret check --tree hajime
@@ -1529,6 +1533,27 @@ user.secret.OCI_KEY = vault://secret/data/oci/private_key
 - `user.env` は**無い**。ツリーの外に「コアが env を注入する相手」という概念が
   無い(人間のシェルの env は人間の持ち物)。宣言(pull)だけが要る
 
+#### テンプレート宣言 — `.template.KEY = <tplファイルパス>`
+
+1つの値ではなく**複数の秘密を1ファイルにレンダリングして**渡したい相手
+(設定ファイルを丸ごと要求するツール)には、テンプレートを宣言する:
+
+```
+# ~/.config/haj/config
+user.template.GLAB_CONFIG = ~/.config/glab-cli/config.yml.tpl
+```
+
+- 値は**ローカルの tpl ファイルのパス**(テンプレート自体は秘密ではない —
+  中身は参照だけ)。書式は `--secret-file` のテンプレート(§10.2)と**同じ**
+  (vault-agent の正準形 + `op://`)。エンジンは1つで、宣言化しても書式は増えない
+- 実体化は `haj secret template <KEY>`(§10.9)。exec 時には何もしない —
+  宣言(pull)の規則は secret と同一
+- 相補規則も secret と同一(§10.8): ツリー文脈は `tree.<名前>.template.*`、
+  外は `user.template.*`。権威はユーザー設定だけ
+- `haj secret list` には `KEY=template:<パス>` の形で出る(種別が判る)。
+  `haj secret check` は tpl の存在と**中の参照の構文**まで検証する(§10.6 —
+  描画と同じ経路に空値リゾルバを差すだけなので、金庫には触らない)
+
 ### 10.9 `haj secret` — 宣言を引く(読みだけ)
 
 サブコマンドが金庫を**直接**読むと、接続と認証の知識(アドレス・認証方式・
@@ -1538,7 +1563,9 @@ user.secret.OCI_KEY = vault://secret/data/oci/private_key
 ```
 haj secret get <KEY>                       # 宣言を解決して値を stdout へ
 haj secret file <KEY>                      # 宣言を解決してファイルに実体化し、パスを stdout へ
-haj secret list  [--tree <インストール名>]  # 宣言の一覧(KEY=<参照>。値は解決しない)
+haj secret template <KEY> [--out <パス>]   # テンプレート宣言(§10.8)を描画して実体化し、パスを stdout へ
+haj secret tmpdir <名前>                   # 名前付き管理ディレクトリ(0700)を確保してパスを stdout へ
+haj secret list  [--tree <インストール名>]  # 宣言の一覧(値は解決しない)
 haj secret check [--tree <インストール名>]  # 宣言と受け渡しの検証(§10.6。金庫に触らない)
 ```
 
@@ -1563,6 +1590,21 @@ OCI_CLI_KEY_FILE=$(haj secret file OCI_KEY) oci compute instance list ...
   ソケットと同じ寿命観で、消し忘れという概念ごと無くす。`$XDG_RUNTIME_DIR` が
   無い環境は `$TMPDIR/haj-<uid>/secret-files/`(0700。寿命は OS の tmp 掃除に
   従う)にフォールバックする
+- **`template` は file の複数秘密版**(テンプレート宣言 — §10.8 — を描画して
+  実体化)。既定の書き先は管理領域の `templates/<KEY>`。`--out <パス>` で書き先を
+  選べるが、**管理領域(`$XDG_RUNTIME_DIR/haj/` 以下)の中だけ** — 親ディレクトリを
+  realpath してから包含を検証する(シンボリックリンクで外へ抜けさせない)。
+  **「秘密の実体が任意の永続パスに書かれる口は存在しない」**という §10.8 以来の
+  不変条件は、テンプレートでも崩さない。ファイルは 0600、同じ書き先は上書き
+- **`tmpdir <名前>` は名前付き管理ディレクトリ**(0700)。同じ名前は常に同じパス
+  (file の同一 KEY 同一パスと同じ規則)で、掃除の API は無い(寿命も file と同じ)。
+  「設定**ディレクトリ**を環境変数で指せ」と要求するツールの受け皿:
+
+```sh
+dir=$(haj secret tmpdir glab)
+haj secret template GLAB_CONFIG --out "$dir/config.yml"
+GLAB_CONFIG_DIR=$dir exec glab "$@"
+```
 - **`list` / `check` だけは人手用の `--tree <インストール名>` で対象を明示できる**
   (人手の点検は日常の操作 — `HAJ_TREE=` の前置きを覚えさせない)。明示は環境より
   手前: `--tree` > 環境の `HAJ_TREE` > user 域(§10.8 の「その場の明示が常に勝つ」
@@ -1577,8 +1619,8 @@ OCI_CLI_KEY_FILE=$(haj secret file OCI_KEY) oci compute instance list ...
 - **読みだけ。** 宣言の参照先は他所の所有物でありうる(共有の金庫など)。haj から
   書く口は無い — 書きたい秘密は**自分の store**(§10.10)に置く。これが所有の規律:
   **secret = 読む(他所の物も含む)、store = 読み書き(自分の物だけ)**
-- 補完(§9.0): 動詞と、`get` / `file` には**宣言済みの KEY**(目録は手元の設定
-  だけで列挙できる — 金庫には触らない)
+- 補完(§9.0): 動詞と、`get` / `file` / `template` には**宣言済みの KEY**
+  (目録は手元の設定だけで列挙できる — 金庫には触らない)
 - `secret` は予約語(§2.6)。奪われると「get は宣言された参照しか解決しない」という
   この節の保証が破れる(偽の値の差し込み)
 

@@ -109,7 +109,7 @@ const CANON: &str = "vault template を解釈できません。対応する形: 
 /// 抱え込むことになるし、「どこまで動くのか」が誰にも分からなくなる。
 fn vault_template(value: &str) -> Result<String, String> {
     let t = value.trim();
-    let (rendered, consumed, _, _) = render_with_block(t)?;
+    let (rendered, consumed, _, _) = render_with_block(t, &vault_fetch)?;
     if !t[consumed..].trim().is_empty() {
         return Err(CANON.to_string());
     }
@@ -118,7 +118,11 @@ fn vault_template(value: &str) -> Result<String, String> {
 
 /// `{{ with secret "<パス>" }} … {{ end }}` を s の先頭(最初の `{{`)から1つ描画する。
 /// 返り値: (描画結果, 消費バイト数, 開きタグの左trim, 閉じタグの右trim)。
-fn render_with_block(s: &str) -> Result<(String, usize, bool, bool), String> {
+/// `fetch` は `(パス, フィールド) → 値`。本物(vault_fetch)の代わりに空値を返す
+/// 検証用リゾルバを差せる — テンプレートの構文検証(§10.6)は金庫に触らない。
+type Fetch<'a> = &'a dyn Fn(&[&str], &str) -> Result<String, String>;
+
+fn render_with_block(s: &str, fetch: Fetch) -> Result<(String, usize, bool, bool), String> {
     let Some((body, mut rest, open_left, open_right)) = take_block(s) else {
         return Err(CANON.to_string());
     };
@@ -161,7 +165,7 @@ fn render_with_block(s: &str) -> Result<(String, usize, bool, bool), String> {
         else {
             return Err(CANON.to_string());
         };
-        out.push_str(&vault_fetch(&segs, field)?);
+        out.push_str(&fetch(&segs, field)?);
         rest = r;
         trim_pending = right;
     }
@@ -380,7 +384,7 @@ fn is_env_name(s: &str) -> bool {
         && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
-fn expand_tilde(path: &str) -> std::path::PathBuf {
+pub(crate) fn expand_tilde(path: &str) -> std::path::PathBuf {
     if let Some(rest) = path.strip_prefix("~/") {
         if let Some(home) = env::var_os("HOME") {
             return std::path::PathBuf::from(home).join(rest);
@@ -409,14 +413,15 @@ fn runtime_dir() -> Result<std::path::PathBuf, String> {
     Ok(dir)
 }
 
-/// `--secret-file` のテンプレート描画。vault の正準形ブロックを置換し、
-/// op:// を含めばファイル全体を `op inject` に通す(SPEC §10.2)。
+/// テンプレート描画(`--secret-file` と `haj secret template` が共用 — §10.2 / §10.9)。
+/// vault の正準形ブロックを置換し、op:// を含めばファイル全体を `op inject` に通す。
 /// `vault://` 短縮形はテンプレート内では解釈しない(トークンの境界が曖昧になる)。
-fn render_template(content: &str) -> Result<String, String> {
+pub(crate) fn render_template(content: &str) -> Result<String, String> {
     let mut out = String::new();
     let mut rest = content;
     while let Some(start) = rest.find("{{") {
-        let (rendered, consumed, trim_left, trim_right) = render_with_block(&rest[start..])?;
+        let (rendered, consumed, trim_left, trim_right) =
+            render_with_block(&rest[start..], &vault_fetch)?;
         let text = &rest[..start];
         out.push_str(if trim_left { text.trim_end() } else { text });
         out.push_str(&rendered);
@@ -436,6 +441,23 @@ fn render_template(content: &str) -> Result<String, String> {
         }
     }
     Ok(out)
+}
+
+/// テンプレートの**構文検証**(SPEC §10.6)。金庫に触らずに、正準形ブロックが
+/// すべて解釈できるかを確かめ、参照の個数(vault のフィールド + op://)を返す。
+/// リゾルバに空値を差すだけで、描画と同じ経路を通る — 検証と描画がズレない。
+pub(crate) fn validate_template(content: &str) -> Result<usize, String> {
+    let count = std::cell::Cell::new(0usize);
+    let fake = |_: &[&str], _: &str| -> Result<String, String> {
+        count.set(count.get() + 1);
+        Ok(String::new())
+    };
+    let mut rest = content;
+    while let Some(start) = rest.find("{{") {
+        let (_, consumed, _, _) = render_with_block(&rest[start..], &fake)?;
+        rest = &rest[start + consumed..];
+    }
+    Ok(count.get() + content.matches("op://").count())
 }
 
 /// 全て解決できてから mode 0600 で書く。半端なファイルを残さない。

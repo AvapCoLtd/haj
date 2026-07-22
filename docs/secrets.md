@@ -126,6 +126,21 @@ OCI_CLI_KEY_FILE=$(haj secret file OCI_KEY) oci compute instance list ...
 呼ぶたび上書きで、掃除は不要(セッション終了で自然消滅 — ssh-agent のソケットと
 同じ寿命観)。ファイル前提の外部 CLI にそのまま渡せる。
 
+複数の秘密を1ファイルにレンダリングして渡す相手(設定ファイルを丸ごと要求する
+ツール)には**テンプレート宣言**(`user.template.KEY = <tplパス>`。書式は
+`--secret-file` と同じ vault-agent 正準形)と `haj secret template` / `tmpdir`:
+
+```sh
+# ~/.config/haj/config: user.template.GLAB_CONFIG = ~/.config/glab-cli/config.yml.tpl
+dir=$(haj secret tmpdir glab)
+haj secret template GLAB_CONFIG --out "$dir/config.yml"
+GLAB_CONFIG_DIR=$dir exec glab "$@"
+```
+
+`--out` は管理領域(`$XDG_RUNTIME_DIR/haj/` 以下)の中だけ(realpath 検証)。
+秘密の実体が任意の永続パスに書かれる口は無い。`haj secret check` は tpl の存在と
+中の参照の構文まで検証する(金庫に触らない)。
+
 - store は常に自分の名前空間 `<prefix>/trees/<HAJ_TREE>/`(既定 prefix は
   `secret/data/users/<ユーザー名>`。`store.tree.prefix` で変更可)。引数は裸の
   論理パス。`store://` 前置きも受ける(設定から受けた参照データをそのまま渡せる)

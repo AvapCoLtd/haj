@@ -2202,3 +2202,212 @@ fn secretファイルも宣言解決の規則はgetと同一() {
         stdout(&out)
     );
 }
+
+// ---- 0.39.0: テンプレート宣言 (template / tmpdir。SPEC §10.8 / §10.9) ----
+
+#[test]
+fn tmpdirは同じ名前で常に同じパスの0700ディレクトリを返す() {
+    let sb = Sandbox::new("tmpdir");
+    let cp = sb.dir.join("nonexistent").display().to_string();
+    let runtime = sb.dir.join("runtime");
+    fs::create_dir_all(&runtime).unwrap();
+    let envs = [("XDG_RUNTIME_DIR", runtime.to_str().unwrap())];
+
+    let out = sb.haj(&cp, &["secret", "tmpdir", "glab"], &envs);
+    assert!(out.status.success(), "stderr: {}", stderr(&out));
+    let path = stdout(&out).trim().to_string();
+    assert!(path.ends_with("haj/tmpdir/glab"), "パスの形が違う: {path}");
+    use std::os::unix::fs::PermissionsExt;
+    let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o700, "0700 でない: {mode:o}");
+
+    // 同じ名前は常に同じパス
+    let out2 = sb.haj(&cp, &["secret", "tmpdir", "glab"], &envs);
+    assert_eq!(stdout(&out2).trim(), path);
+
+    // 名前の字面: パス区切りや .. は構造的に不可
+    for bad in ["../evil", "a/b", ".hidden", "-x", ""] {
+        let out = sb.haj(&cp, &["secret", "tmpdir", bad], &envs);
+        assert_eq!(out.status.code(), Some(1), "{bad} が通ってしまった");
+    }
+}
+
+#[test]
+fn テンプレート宣言は描画して実体化しパスを出す() {
+    let sb = Sandbox::new("tpl-render");
+    let vault = sb.fake_vault();
+    let cp = sb.dir.join("nonexistent").display().to_string();
+    let runtime = sb.dir.join("runtime");
+    fs::create_dir_all(&runtime).unwrap();
+    sb.write_file(
+        "glab.yml.tpl",
+        "host: example.com\ntoken: {{ with secret \"secret/data/glab\" }}{{ .Data.data.token }}{{ end }}\n",
+    );
+    sb.write_file(
+        ".config/haj/config",
+        &format!(
+            "user.template.GLAB_CONFIG = {}\n",
+            sb.dir.join("glab.yml.tpl").display()
+        ),
+    );
+    let envs = [
+        ("HAJ_VAULT_CMD", vault.to_str().unwrap()),
+        ("XDG_RUNTIME_DIR", runtime.to_str().unwrap()),
+        ("USER", "alice"),
+    ];
+
+    // 既定の書き先 (管理領域の templates/<KEY>)
+    let out = sb.haj(&cp, &["secret", "template", "GLAB_CONFIG"], &envs);
+    assert!(out.status.success(), "stderr: {}", stderr(&out));
+    let path = stdout(&out).trim().to_string();
+    assert!(
+        path.ends_with("haj/templates/GLAB_CONFIG"),
+        "パスの形が違う: {path}"
+    );
+    let body = fs::read_to_string(&path).unwrap();
+    assert_eq!(
+        body, "host: example.com\ntoken: s3cr3t\n",
+        "描画が違う: {body}"
+    );
+    use std::os::unix::fs::PermissionsExt;
+    let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o600, "0600 でない: {mode:o}");
+
+    // --out: tmpdir の中なら書ける(使い姿の合成)
+    let dir = stdout(&sb.haj(&cp, &["secret", "tmpdir", "glab"], &envs))
+        .trim()
+        .to_string();
+    let out_file = format!("{dir}/config.yml");
+    let out = sb.haj(
+        &cp,
+        &["secret", "template", "GLAB_CONFIG", "--out", &out_file],
+        &envs,
+    );
+    assert!(out.status.success(), "stderr: {}", stderr(&out));
+    assert_eq!(stdout(&out).trim(), out_file);
+    assert!(fs::read_to_string(&out_file).unwrap().contains("s3cr3t"));
+
+    // 宣言に無い KEY はエラー
+    let out = sb.haj(&cp, &["secret", "template", "NOPE"], &envs);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(stderr(&out).contains("テンプレート宣言にありません"));
+}
+
+#[test]
+fn テンプレートのoutは管理領域の外に書けない() {
+    let sb = Sandbox::new("tpl-out-escape");
+    let vault = sb.fake_vault();
+    let cp = sb.dir.join("nonexistent").display().to_string();
+    let runtime = sb.dir.join("runtime");
+    fs::create_dir_all(&runtime).unwrap();
+    sb.write_file("t.tpl", "plain\n");
+    sb.write_file(
+        ".config/haj/config",
+        &format!("user.template.T = {}\n", sb.dir.join("t.tpl").display()),
+    );
+    let envs = [
+        ("HAJ_VAULT_CMD", vault.to_str().unwrap()),
+        ("XDG_RUNTIME_DIR", runtime.to_str().unwrap()),
+        ("USER", "alice"),
+    ];
+
+    // 管理領域の外は拒否(秘密の実体が任意の永続パスに書かれる口は無い)
+    let outside = sb.dir.join("leak.yml");
+    let out = sb.haj(
+        &cp,
+        &[
+            "secret",
+            "template",
+            "T",
+            "--out",
+            outside.to_str().unwrap(),
+        ],
+        &envs,
+    );
+    assert_eq!(out.status.code(), Some(1));
+    assert!(
+        stderr(&out).contains("管理領域") && stderr(&out).contains("外には書けません"),
+        "領域外拒否の案内が無い: {}",
+        stderr(&out)
+    );
+    assert!(!outside.exists(), "領域外に書かれている");
+
+    // シンボリックリンクで外へ抜ける道も塞ぐ(realpath 検証)
+    let dir = stdout(&sb.haj(&cp, &["secret", "tmpdir", "t"], &envs))
+        .trim()
+        .to_string();
+    let escape = sb.dir.join("escape-target");
+    fs::create_dir_all(&escape).unwrap();
+    std::os::unix::fs::symlink(&escape, format!("{dir}/link")).unwrap();
+    let out = sb.haj(
+        &cp,
+        &[
+            "secret",
+            "template",
+            "T",
+            "--out",
+            &format!("{dir}/link/x.yml"),
+        ],
+        &envs,
+    );
+    assert_eq!(out.status.code(), Some(1), "symlink 脱出が通ってしまった");
+    assert!(!escape.join("x.yml").exists(), "symlink 越しに書かれている");
+}
+
+#[test]
+fn テンプレート宣言はlistとcheckに種別つきで出る() {
+    let sb = Sandbox::new("tpl-meta");
+    let cp = sb.dir.join("nonexistent").display().to_string();
+    sb.write_file(
+        "ok.tpl",
+        "a: {{ with secret \"secret/data/x\" }}{{ .Data.data.a }}{{ .Data.data.b }}{{ end }}\n",
+    );
+    sb.write_file(
+        ".config/haj/config",
+        &format!(
+            "user.secret.KEY1 = vault://secret/data/x/a\nuser.template.OK = {}\nuser.template.MISSING = /nonexistent.tpl\n",
+            sb.dir.join("ok.tpl").display()
+        ),
+    );
+
+    // list: KEY=template:<パス> の形
+    let out = sb.haj(&cp, &["secret", "list"], &[]);
+    assert!(out.status.success());
+    let s = stdout(&out);
+    assert!(
+        s.contains("KEY1=vault://secret/data/x/a") && s.contains("OK=template:"),
+        "種別が判らない:\n{s}"
+    );
+
+    // check: 存在と構文を検証(参照の個数つき)。壊れは ✗ で exit 1。金庫に触らない
+    let out = sb.haj(&cp, &["secret", "check"], &[("USER", "alice")]);
+    assert_eq!(out.status.code(), Some(1), "MISSING があるのに exit 0");
+    let s = stdout(&out);
+    assert!(
+        s.contains("テンプレート (user.template.*)")
+            && s.contains("(2 個の参照)")
+            && s.contains("✗ /nonexistent.tpl"),
+        "テンプレートの検証が出ない:\n{s}"
+    );
+    assert!(
+        !sb.dir.join("vault-args").exists(),
+        "check が金庫に触っている"
+    );
+
+    // 壊れた tpl は構文エラーとして見える
+    sb.write_file("broken.tpl", "x: {{ printf \"nope\" }}\n");
+    sb.write_file(
+        ".config/haj/config",
+        &format!(
+            "user.template.B = {}\n",
+            sb.dir.join("broken.tpl").display()
+        ),
+    );
+    let out = sb.haj(&cp, &["secret", "check"], &[("USER", "alice")]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(
+        stdout(&out).contains("✗") && stdout(&out).contains("解釈できません"),
+        "構文エラーが出ない:\n{}",
+        stdout(&out)
+    );
+}
