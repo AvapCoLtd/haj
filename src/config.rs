@@ -132,6 +132,22 @@ impl Config {
         self.map.contains_key(file_key)
     }
 
+    /// ユーザー文脈の宣言(SPEC §10.8)。`user.secret.KEY = <参照>` を
+    /// (KEY, 参照) で名前順に返す。tree.* と同じ権威規則 — ユーザー設定からだけ。
+    pub fn user_secret_entries(&self) -> Vec<(String, String)> {
+        let mut v: Vec<(String, String)> = self
+            .map
+            .iter()
+            .filter_map(|(k, val)| {
+                let key = k.strip_prefix("user.secret.")?;
+                (!key.is_empty() && !key.contains('.') && !val.is_empty())
+                    .then(|| (key.to_string(), val.clone()))
+            })
+            .collect();
+        v.sort();
+        v
+    }
+
     /// 既定値を持たない値(トークンなど)。無ければ None。
     pub fn get_opt(&self, env_key: &str, file_key: &str) -> Option<(String, Source)> {
         if let Ok(v) = std::env::var(env_key) {
