@@ -216,6 +216,8 @@ haj tree — 共有ツリーの取得と更新 (SPEC §9.5)。
   haj tree update [<名前>]       差分を見せてから ff-only で更新 (省略で全部)
   haj tree list                  名前 / 版 / コマンド数 / URL
   haj tree remove <名前>
+  haj tree configure <名前>      ツリーの初期値提案 (config-init) を確認して
+                                 ユーザー設定へ追記 (保存先は常にユーザー設定)
 
 git リポジトリを ~/.local/share/haj/trees/<名前> に置くだけ。入れたツリーは
 探索の対象になり、一覧に [<名前>] として出る。探索順は
