@@ -83,7 +83,7 @@ impl Config {
             // token にはシークレット参照を書ける(SPEC §8.4)。平文をディスクに
             // 置かずに済ませるため、使うこの瞬間に展開する。設定ファイルは本人しか
             // 書けないので、参照を書いたこと自体が同意 — ゲート不要。
-            let token = crate::secrets::expand(&token, false)
+            let token = crate::secrets::expand(&token, false, None)
                 .map_err(|e| format!("token: {e}"))?
                 .unwrap_or(token);
             return Ok(Config {

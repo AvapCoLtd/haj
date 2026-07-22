@@ -17,6 +17,7 @@ mod docs;
 mod project;
 mod secrets;
 mod selfupgrade;
+mod store;
 mod tasks;
 mod tree;
 
@@ -177,6 +178,10 @@ fn main() {
         "completion" => completion::run(rest),
         // 何が展開されるのかを、金庫に触らずに確かめる。SPEC.md §10.6。
         "secrets" => secrets::run(rest, &deliveries),
+        // ツリー専用ストアの読み書きと認証。SPEC §10.9。
+        // store:// は自分の環境の HAJ_TREE で解決する(ツリーのコマンドの中から
+        // `... | haj store put store://token` と合成できる)。
+        "store" => store::run(rest),
         // コマンドが読む環境変数を中継する(--haj-env)。出力は --env-file に渡せる形式。
         // 「どの環境変数を読むのか」はコマンドの中身の知識なので、コアは聞くだけ。SPEC §4.4。
         "env" => {
@@ -195,7 +200,7 @@ fn main() {
                 eprintln!("haj: 未知のコマンドです: {target}");
                 std::process::exit(1);
             };
-            match contract::env_vars(&cmd) {
+            match env_report(&cmd) {
                 Some(v) => println!("{v}"),
                 None => {
                     eprintln!(
@@ -313,7 +318,7 @@ fn tree_env(tree_name: &str, dir: &std::path::Path, name: Option<&str>) -> ! {
         eprintln!("haj: {tree_name} に {name} はありません");
         std::process::exit(1);
     };
-    match contract::env_vars(&cmd) {
+    match env_report(&cmd) {
         Some(v) => println!("{v}"),
         None => {
             eprintln!(
@@ -345,7 +350,13 @@ fn tree_which(tree_name: &str, dir: &std::path::Path, name: &str) -> ! {
 /// exec で自分を置き換える。ラッパープロセスを残さないので、シグナルも
 /// 終了コードもサブコマンドのものがそのまま呼び出し元に伝わる。
 fn exec_command(cmd: &Command, rest: &[String], deliveries: &[secrets::Delivery]) -> ! {
-    let mut proc = prepare_proc(&cmd.path, rest, deliveries);
+    // store:// の文脈と tree.* 注入(SPEC §10.7 / §10.8)は「渡す相手のコマンドが
+    // 属するツリー」で決まる。インストール済みツリー以外では None。
+    let tree_ctx = match &cmd.origin {
+        project::Origin::Tree(name) => Some(name.as_str()),
+        _ => None,
+    };
+    let mut proc = prepare_proc(&cmd.path, rest, deliveries, tree_ctx);
 
     proc.env("HAJ_NAME", &cmd.name);
     match &cmd.root {
@@ -457,13 +468,24 @@ fn task_summary(cache: &mut DescribeCache, t: &tasks::Task) -> String {
     }
 }
 
+/// `--haj-env` の中継に、コアが知っている**出所**を注記する(SPEC §10.8)。
+/// tree設定(tree.<名前>.env / .secret)で決まる鍵に行末コメントが付く。
+/// コメントは --env-file で読み飛ばされるので、出力の互換は変わらない。
+fn env_report(cmd: &Command) -> Option<String> {
+    let out = contract::env_vars(cmd)?;
+    match &cmd.origin {
+        project::Origin::Tree(name) => Some(store::annotate_env(&out, name)),
+        _ => Some(out),
+    }
+}
+
 /// 複数コマンドの `--haj-env` を `# ==== <名前> ====` の節で連結する(SPEC §9.6 / §9.7)。
 /// 応答しないコマンドは黙って飛ばす(何も足せないため)。出力は --env-file に
 /// 渡せる形式のまま。1つも応答しなければ None。
 fn env_sections(cmds: &[Command]) -> Option<String> {
     let mut out = String::new();
     for c in cmds {
-        if let Some(v) = contract::env_vars(c) {
+        if let Some(v) = env_report(c) {
             if !out.is_empty() {
                 out.push('\n');
             }
@@ -569,7 +591,12 @@ fn apply_project_env(proc: &mut Proc) {
     }
 }
 
-fn prepare_proc(path: &std::path::Path, args: &[String], deliveries: &[secrets::Delivery]) -> Proc {
+fn prepare_proc(
+    path: &std::path::Path,
+    args: &[String],
+    deliveries: &[secrets::Delivery],
+    tree_ctx: Option<&str>,
+) -> Proc {
     let mut proc = Proc::new(path);
     proc.args(args);
 
@@ -577,10 +604,20 @@ fn prepare_proc(path: &std::path::Path, args: &[String], deliveries: &[secrets::
     // haj exec)がここを通るので、探索結果に依存しない変数は一括で注入する。
     contract::apply_runtime_env(&mut proc);
 
+    // ツリーごとの設定注入(SPEC §10.8)。**フラグの適用より先** — その変数が
+    // シェル環境に無いときだけ注入し、フラグは後から上書きするので、優先順位は
+    // フラグ > シェル環境 > tree設定 > コマンド既定値 になる。
+    if let Some(tree) = tree_ctx {
+        if let Err(e) = store::inject_tree_config(&mut proc, tree) {
+            eprintln!("haj: {e}");
+            std::process::exit(1);
+        }
+    }
+
     // シークレットは**人が明示的に渡すものだけ**(SPEC §10)。環境を勝手に走査しない。
     // 書いた順に適用するので、同名の指定は後勝ち。
     for d in deliveries {
-        if let Err(e) = d.apply(&mut proc) {
+        if let Err(e) = d.apply(&mut proc, tree_ctx) {
             eprintln!("haj: {e}");
             std::process::exit(1);
         }
@@ -657,7 +694,8 @@ fn exec_program(prog: &str, args: Vec<String>, deliveries: &[secrets::Delivery])
         }
     };
 
-    let mut proc = prepare_proc(&path, &args, deliveries);
+    // haj の外の世界のコマンドにツリー文脈は無い(store:// はエラーになる — §10.7)
+    let mut proc = prepare_proc(&path, &args, deliveries, None);
 
     // haj の外の世界のコマンドに、hajサブコマンドの顔(HAJ_ROOT / HAJ_NAME /
     // HAJ_TREE)はさせない。ただし HAJ_PROJECT は「サブコマンドであること」ではなく

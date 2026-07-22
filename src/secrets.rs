@@ -32,9 +32,19 @@ pub const DEFAULT_VAULT_CMD: &str = "vault";
 /// これをやると、参照をたまたま文中に含む変数(GitLab CI が置く
 /// CI_MERGE_REQUEST_DESCRIPTION に op:// の例文が入っている、等)を解決しようと
 /// して、無関係な理由で全体が止まる。
-pub fn expand(value: &str, embedded_op: bool) -> Result<Option<String>, String> {
+///
+/// `tree` は store:// 参照(SPEC §10.7)の文脈 — **渡す相手のコマンドが属する
+/// ツリーのインストール名**。ツリー以外に渡すときは None(store:// はエラーになる)。
+pub fn expand(
+    value: &str,
+    embedded_op: bool,
+    tree: Option<&str>,
+) -> Result<Option<String>, String> {
     // 値全体が参照のものを先に見る。順序が入れ替わると、vault:// の中に
     // op:// を含むような値の解釈が変わってしまう。
+    if let Some(rest) = value.strip_prefix("store://") {
+        return crate::store::resolve(rest, tree).map(Some);
+    }
     if let Some(rest) = value.strip_prefix("vault://") {
         return vault_uri(rest).map(Some);
     }
@@ -64,6 +74,7 @@ pub fn expand(value: &str, embedded_op: bool) -> Result<Option<String>, String> 
 /// 環境変数の走査と同じ規則(op も値全体のときだけ)。
 pub fn is_reference(value: &str) -> bool {
     value.starts_with("vault://")
+        || value.starts_with("store://")
         || (value.starts_with("{{") && value.ends_with("}}"))
         || value.starts_with("env://")
         || value.starts_with("file://")
@@ -72,7 +83,8 @@ pub fn is_reference(value: &str) -> bool {
 
 /// `vault://<パス>/<フィールド>` — 最後のセグメントがフィールド、残りがパス。
 /// パスの規約は template 形と同じ(KV v2 は `/data/` 入り)。
-fn vault_uri(rest: &str) -> Result<String, String> {
+/// store:// の写像先(store.rs)からも呼ばれる。
+pub(crate) fn vault_uri(rest: &str) -> Result<String, String> {
     let segs: Vec<&str> = rest.split('/').filter(|s| !s.is_empty()).collect();
     if segs.len() < 2 {
         return Err(format!(
@@ -265,11 +277,12 @@ impl Delivery {
 
     /// 解決して proc に適用する。書いた順に呼ぶこと(同名は後勝ち)。
     /// 失敗したら Err — 呼び出し側は本体を実行せずに止まる(fail-fast)。
-    pub fn apply(&self, proc: &mut Proc) -> Result<(), String> {
+    /// `tree` は store:// の文脈(渡す相手の所属ツリー。SPEC §10.7)。
+    pub fn apply(&self, proc: &mut Proc, tree: Option<&str>) -> Result<(), String> {
         match self {
             Delivery::Secret { name, value } => {
                 // 明示なので op の埋め込みも展開する
-                let v = expand(value, true)
+                let v = expand(value, true, tree)
                     .map_err(|e| format!("--secret {name}: {e}"))?
                     .unwrap_or_else(|| value.clone());
                 proc.env(name, v);
@@ -280,7 +293,7 @@ impl Delivery {
                     .map_err(|e| format!("--env-file {file}: 読めません: {e}"))?;
                 for (k, v) in crate::config::parse_kv(&content) {
                     // 値全体規則。ファイルの値は埋め込みを解釈しない
-                    let v = expand(&v, false)
+                    let v = expand(&v, false, tree)
                         .map_err(|e| format!("--env-file {file}: {k}: {e}"))?
                         .unwrap_or(v);
                     proc.env(k, v);
@@ -290,7 +303,7 @@ impl Delivery {
             Delivery::SecretFile { target, spec } => {
                 // 中身を作る。参照ならその値、そうでなければテンプレートを描画。
                 let content = if is_reference(spec) {
-                    expand(spec, true)
+                    expand(spec, true, tree)
                         .map_err(|e| format!("--secret-file {target}: {e}"))?
                         .unwrap_or_else(|| spec.clone())
                 } else {
@@ -461,10 +474,15 @@ fn vault_fetch(path: &[&str], field: &str) -> Result<String, String> {
     run_cli(proc, &cli, None)
 }
 
+/// vault CLI の決定(環境変数 > 設定 > 既定)。store.rs と共用する。
+pub(crate) fn vault_cli() -> String {
+    cli_for("HAJ_VAULT_CMD", "secrets.vault_cmd", DEFAULT_VAULT_CMD)
+}
+
 /// vault CLI のプロセスを作る。サーバは、環境に VAULT_ADDR / BAO_ADDR が
 /// あればそちらを尊重し、無ければ設定 `secrets.vault_addr` を両方の名前で渡す
 /// (bao は BAO_ADDR を先に見る)。空なら何も注入しない。
-fn vault_proc(cli: &str) -> Proc {
+pub(crate) fn vault_proc(cli: &str) -> Proc {
     let mut proc = Proc::new(cli);
     let has_addr = ["BAO_ADDR", "VAULT_ADDR"]
         .iter()
@@ -490,7 +508,7 @@ static VAULT_LOGIN: OnceLock<Result<(), String>> = OnceLock::new();
 /// CI は VAULT_TOKEN 等で認証済みの前提(`token lookup` が通る)なので login は
 /// 走らない。認証しない CI で vault 参照を使うなら `HAJ_VAULT_LOGIN=off` を置くこと
 /// (OIDC はブラウザと人を待つ)。
-fn ensure_vault_login(cli: &str) -> Result<(), String> {
+pub(crate) fn ensure_vault_login(cli: &str) -> Result<(), String> {
     VAULT_LOGIN
         .get_or_init(|| {
             let logged_in = vault_proc(cli)
@@ -609,7 +627,13 @@ pub fn run(args: &[String], deliveries: &[Delivery]) -> ! {
             Ok(rows) => {
                 for (kind, name, value) in rows {
                     let mark = if is_reference(&value) { "→" } else { " " };
-                    println!("   {kind:10}  {name:20}  {mark} {value}");
+                    // store:// はストア参照(SPEC §10.6)— 展開先の物理写像を添える。
+                    // 写像は手元の設定だけで決まるので、金庫には触らない。
+                    let note = value
+                        .strip_prefix("store://")
+                        .map(crate::store::check_note)
+                        .unwrap_or_default();
+                    println!("   {kind:10}  {name:20}  {mark} {value}{note}");
                 }
             }
             Err(e) => {
@@ -631,7 +655,7 @@ fn cli_for(env_key: &str, file_key: &str, default: &str) -> String {
 }
 
 /// 末尾の改行1つを落とす。CLI や credential ファイルが付けるもの。
-fn trim_newline(mut s: String) -> String {
+pub(crate) fn trim_newline(mut s: String) -> String {
     if s.ends_with('\n') {
         s.pop();
         if s.ends_with('\r') {

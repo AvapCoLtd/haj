@@ -105,6 +105,27 @@ impl Config {
             .cloned()
     }
 
+    /// ツリーごとの設定注入(SPEC §10.8)。`tree.<名前>.<kind>.KEY = 値` を
+    /// (KEY, 値) で名前順に返す。kind は "env"(平文・無展開)か "secret"(参照)。
+    ///
+    /// **ユーザー設定からだけ**読む。ツリー自身の config やプロジェクトの
+    /// .haj/config に書かれた tree.* をここが見ることは無い — clone した木が
+    /// 自分への注入を宣言できると、盗み先の指定になる(SPEC §10.8)。
+    pub fn tree_entries(&self, tree: &str, kind: &str) -> Vec<(String, String)> {
+        let prefix = format!("tree.{tree}.{kind}.");
+        let mut v: Vec<(String, String)> = self
+            .map
+            .iter()
+            .filter_map(|(k, val)| {
+                let key = k.strip_prefix(&prefix)?;
+                (!key.is_empty() && !key.contains('.') && !val.is_empty())
+                    .then(|| (key.to_string(), val.clone()))
+            })
+            .collect();
+        v.sort();
+        v
+    }
+
     /// 既定値を持たない値(トークンなど)。無ければ None。
     pub fn get_opt(&self, env_key: &str, file_key: &str) -> Option<(String, Source)> {
         if let Ok(v) = std::env::var(env_key) {
@@ -196,6 +217,18 @@ pub const KEYS: &[(&str, &str, &str, &str)] = &[
         "未ログイン時に自動実行する login の引数。off で無効化",
     ),
     (
+        "HAJ_STORE_ENGINE",
+        "store.engine",
+        crate::store::DEFAULT_ENGINE,
+        "ストアのエンジン (v1 は vault のみ。SPEC §10.7)",
+    ),
+    (
+        "HAJ_STORE_PREFIX",
+        "store.prefix",
+        crate::store::DEFAULT_PREFIX_DOC,
+        "ストアの物理プレフィックス (書式は vault:// のパスと同じ。<ユーザー名> は実行ユーザーで埋まる)",
+    ),
+    (
         "HAJ_GITHUB",
         "selfupgrade.github",
         crate::selfupgrade::DEFAULT_GITHUB,
@@ -235,6 +268,7 @@ fn group_title(group: &str) -> &str {
         "" => "コア (探索と規約)",
         "docs" => "docs: ドキュメントの選択UI (SPEC §9.3)",
         "secrets" => "secrets: シークレット参照の解決 (SPEC §10)",
+        "store" => "store: ツリー専用ストア (SPEC §10.7)",
         "selfupgrade" => "selfupgrade: haj自身の更新 (SPEC §9.1)",
         other => other,
     }
@@ -270,6 +304,19 @@ pub fn template() {
     println!("# alias.oci = --secret OCI_CLI_USER=vault://users/me/oci/user \\");
     println!("#             --secret-file OCI_CLI_KEY_FILE=vault://users/me/oci/private_key \\");
     println!("#             exec oci");
+    println!();
+    println!("# ------ tree: ツリーごとの設定注入 (SPEC §10.8) ------");
+    println!();
+    println!("# tree.<インストール名>.env.KEY    = <値>    平文をそのまま注入 (一切展開しない)");
+    println!(
+        "# tree.<インストール名>.secret.KEY = <参照>  実行時に解決して注入 (参照以外はエラー)"
+    );
+    println!("# 優先順位: フラグ > シェル環境 > tree設定 > コマンドの既定値。");
+    println!("# 実効値と出所は haj env <ツリー名> <コマンド> で確認できる。");
+    println!("#");
+    println!("# tree.work.env.MYAPP_ACCOUNT    = alice@example.com");
+    println!("# tree.work.env.TOKEN_OUTPUT     = store://token   # 参照もただの文字列として渡る");
+    println!("# tree.work.secret.CLIENT_SECRET = vault://secret/data/myapp/client_secret");
     println!();
     println!("# private な取得元(GitLab)を使うときのトークン (環境変数: HAJ_TOKEN)。");
     println!("# 平文でも、シークレット参照でもよい (SPEC §8.4):");

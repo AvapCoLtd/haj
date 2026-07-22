@@ -88,8 +88,15 @@ pub fn hook(cmd: &Command, args: &[&str]) -> Option<String> {
         proc.env_remove("HAJ_ROOT");
     }
     // インストール名(HAJ_TREE。SPEC §3.1)は本体実行と同じ規則でフックにも注入する。
+    // tree設定(SPEC §10.8)は `.env` **だけ** — `.secret` は解決も注入もしない
+    // (フックは金庫に触らない。TAB のたびに問い合わせるのは論外 — §10.2)。
     if let crate::project::Origin::Tree(name) = &cmd.origin {
         proc.env("HAJ_TREE", name);
+        for (key, val) in crate::config::Config::load().tree_entries(name, "env") {
+            if std::env::var_os(&key).is_none() {
+                proc.env(&key, &val);
+            }
+        }
     } else {
         proc.env_remove("HAJ_TREE");
     }
