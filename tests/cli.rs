@@ -2694,3 +2694,182 @@ fn config_treeは未インストールでも設定を出し実効envはその旨
         "実効 env の不在理由が出ない:\n{s}"
     );
 }
+
+// ---- haj tree configure (SPEC §9.5 / §10.8 の入口) ----
+
+fn haj_with_stdin(sb: &Sandbox, cp: &str, args: &[&str], input: &str) -> Output {
+    use std::io::Write as _;
+    let mut child = Command::new(env!("CARGO_BIN_EXE_haj"))
+        .args(args)
+        .current_dir(&sb.dir)
+        .env("HAJ_COMMAND_PATH", cp)
+        .env("HAJ_NO_CACHE", "1")
+        .env("HOME", &sb.dir)
+        .env_remove("XDG_CONFIG_HOME")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(input.as_bytes())
+        .unwrap();
+    child.wait_with_output().unwrap()
+}
+
+fn tree_config_init(sb: &Sandbox, tree: &str, body: &str) {
+    let rel = format!(".local/share/haj/trees/{tree}/config-init");
+    sb.write(&rel, body);
+    fs::set_permissions(sb.path(&rel), fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+#[test]
+fn tree_configureは提案を確認のうえ接頭辞を付けてユーザー設定へ追記する() {
+    let sb = Sandbox::new("tree-configure");
+    let cp = sb.path("nonexistent");
+    let cp = cp.to_str().unwrap();
+
+    // HAJ_TREE が渡ることも値で確かめる(インストール名は出力に書かない規約)
+    tree_config_init(
+        &sb,
+        "hajime",
+        concat!(
+            "#!/bin/sh\n",
+            "echo \"# hajime の初期設定\"\n",
+            "echo \"secret.API_KEY = vault://users/${HAJ_TREE}/key\"\n",
+            "echo \"env.GREETING = やあ\"\n",
+        ),
+    );
+
+    // y で追記される。コアが tree.<インストール名>. を付ける
+    let out = haj_with_stdin(&sb, cp, &["tree", "configure", "hajime"], "y\n");
+    let s = stdout(&out);
+    assert!(out.status.success(), "configure 失敗:\n{s}");
+    assert!(
+        s.contains("tree.hajime.secret.API_KEY = vault://users/hajime/key"),
+        "接頭辞付きの提案が出ない:\n{s}"
+    );
+    let cfg = fs::read_to_string(sb.path(".config/haj/config")).unwrap();
+    assert!(
+        cfg.contains("tree.hajime.secret.API_KEY = vault://users/hajime/key"),
+        "宣言が追記されていない:\n{cfg}"
+    );
+    assert!(
+        cfg.contains("tree.hajime.env.GREETING = やあ"),
+        "env が追記されていない:\n{cfg}"
+    );
+
+    // 2回目はすべて設定済み — 何も書かない(冪等)
+    let out = haj_with_stdin(&sb, cp, &["tree", "configure", "hajime"], "y\n");
+    let s = stdout(&out);
+    assert!(
+        s.contains("提案はすべて設定済み"),
+        "設定済みの案内が出ない:\n{s}"
+    );
+    let cfg2 = fs::read_to_string(sb.path(".config/haj/config")).unwrap();
+    assert_eq!(cfg, cfg2, "2回目で設定が変わった");
+}
+
+#[test]
+fn tree_configureはyでなければ何も書かない() {
+    let sb = Sandbox::new("tree-configure-no");
+    let cp = sb.path("nonexistent");
+    let cp = cp.to_str().unwrap();
+
+    tree_config_init(&sb, "hajime", "#!/bin/sh\necho \"env.GREETING = やあ\"\n");
+
+    let out = haj_with_stdin(&sb, cp, &["tree", "configure", "hajime"], "n\n");
+    assert!(!out.status.success(), "n なのに成功扱い");
+    assert!(
+        stdout(&out).contains("中止しました"),
+        "中止の案内が無い:\n{}",
+        stdout(&out)
+    );
+    assert!(
+        !sb.path(".config/haj/config").exists(),
+        "n なのに設定ファイルが書かれた"
+    );
+}
+
+#[test]
+fn tree_configureは書式外の出力で何も書かずに止まる() {
+    let sb = Sandbox::new("tree-configure-bad");
+    let cp = sb.path("nonexistent");
+    let cp = cp.to_str().unwrap();
+
+    tree_config_init(
+        &sb,
+        "hajime",
+        "#!/bin/sh\necho \"tree.hajime.env.X = 自分で接頭辞を書いた\"\n",
+    );
+
+    let out = haj_with_stdin(&sb, cp, &["tree", "configure", "hajime"], "y\n");
+    assert!(!out.status.success(), "書式外なのに成功した");
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("書式外"), "書式エラーの案内が無い:\n{err}");
+    assert!(
+        !sb.path(".config/haj/config").exists(),
+        "書式外なのに設定ファイルが書かれた"
+    );
+}
+
+#[test]
+fn tree_configureはconfig_initが無ければその旨を言う() {
+    let sb = Sandbox::new("tree-configure-none");
+    let cp = sb.path("nonexistent");
+    let cp = cp.to_str().unwrap();
+
+    installed_tree(
+        &sb,
+        "plain",
+        "who",
+        &conforming("名乗る", "", "", "echo hi"),
+    );
+
+    let out = haj_with_stdin(&sb, cp, &["tree", "configure", "plain"], "");
+    assert!(!out.status.success());
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("初期設定を提案していません"),
+        "config-init 不在の案内が無い:\n{err}"
+    );
+}
+
+#[test]
+fn installはconfig_initがあれば入口を案内する() {
+    let sb = Sandbox::new("tree-configure-hint");
+    let cp = sb.path("nonexistent");
+    let cp = cp.to_str().unwrap();
+
+    let remote = git_remote(&sb, "remote/tools");
+    sb.command(
+        "remote/tools",
+        "greet",
+        &conforming("あいさつ", "", "", "echo HELLO"),
+    );
+    sb.write(
+        "remote/tools/config-init",
+        "#!/bin/sh\necho \"env.GREETING = やあ\"\n",
+    );
+    fs::set_permissions(
+        sb.path("remote/tools/config-init"),
+        fs::Permissions::from_mode(0o755),
+    )
+    .unwrap();
+    commit_all(&remote, "greet と config-init");
+
+    let out = sb.haj(&sb.dir, cp, &["tree", "install", remote.to_str().unwrap()]);
+    assert!(
+        out.status.success(),
+        "install 失敗: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        stdout(&out).contains("haj tree configure tools"),
+        "config-init の入口案内が無い:\n{}",
+        stdout(&out)
+    );
+}

@@ -14,7 +14,8 @@ const USAGE: &str = "\
 使い方: haj tree install <gitのURL>[@<ref>] [--name <名前>] [--global]
         haj tree update [<名前>]
         haj tree list
-        haj tree remove <名前>";
+        haj tree remove <名前>
+        haj tree configure <名前>";
 
 /// 個人のインストール先: `$XDG_DATA_HOME/haj/trees`(既定 `~/.local/share/haj/trees`)。
 /// 設定でも環境変数でもなくデータなので、XDG data に置く。
@@ -156,6 +157,7 @@ pub fn run(args: &[String]) -> ! {
         Some(("install", r)) => install(r),
         Some(("update", r)) => update(r),
         Some(("remove", r)) => remove(r),
+        Some(("configure", r)) => configure(r),
         Some((other, _)) => die(&format!("未知のサブコマンドです: {other}\n{USAGE}")),
     }
 }
@@ -264,6 +266,10 @@ fn install(args: &[String]) -> ! {
     println!("インストールしました: {name} ({n} コマンド)");
     println!("  {}", dest.display());
     println!("  一覧に [{name}] として出ます (haj help で確認)");
+    // 初期値の提案があれば入口を1行案内する(SPEC §9.5)
+    if crate::discovery::is_executable(&tree_root(&dest).join("config-init")) {
+        println!("  初期設定の提案があります: haj tree configure {name}");
+    }
 
     // この名前は名前空間の名にもなる(§9.7)。既存の語彙と衝突していたら教える
     // (入れるのは止めない — --name で改名すればよい)。
@@ -353,6 +359,154 @@ fn remove(args: &[String]) -> ! {
     std::process::exit(0);
 }
 
+/// `haj tree configure <名前>`(SPEC §9.5)— ツリーの初期値提案をユーザー設定へ。
+///
+/// ツリーの根の実行ファイル `config-init` を実行し、stdout の提案
+/// (`env.KEY = 値` / `secret.KEY = 参照`)に `tree.<インストール名>.` を付けて、
+/// 本人の確認のうえユーザー設定に**追記**する。§10.8 の規律はそのまま —
+/// 権威はユーザー設定だけで、ツリーの提案が勝手に効くことは無い。
+/// 既にある鍵は追記しない(既存の値を優先)。
+fn configure(args: &[String]) -> ! {
+    let Some(name) = args.first() else {
+        die(&format!("名前が要ります\n{USAGE}"));
+    };
+    if args.len() > 1 {
+        die(&format!("引数が多すぎます: {}\n{USAGE}", args[1]));
+    }
+    let Some((_, dir)) = installed().into_iter().find(|(n, _)| n == name) else {
+        die(&format!("入っていません: {name}\n  一覧: haj tree list"));
+    };
+    let root = tree_root(&dir);
+    let init = root.join("config-init");
+    if !crate::discovery::is_executable(&init) {
+        die(&format!(
+            "{name} は初期設定を提案していません (実行可能な config-init がありません: {})",
+            root.display()
+        ));
+    }
+    let Some(cfg_path) = crate::config::config_dir().map(|d| d.join("config")) else {
+        die("HOME が分かりません");
+    };
+
+    // 規約フックではない(§9.5): タイムアウトも副作用禁止も課さない。
+    // 金庫 CLI で自分のユーザー名を引くような個人化のための実行。
+    // stdin は /dev/null — 対話はコアの確認だけに集約する。stderr は素通し。
+    let out = Proc::new(&init)
+        .env("HAJ_ROOT", &root)
+        .env("HAJ_TREE", name)
+        .env("HAJ_USER_CONFIG", &cfg_path)
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::inherit())
+        .output();
+    let out = match out {
+        Ok(o) => o,
+        Err(e) => die(&format!("config-init を実行できません: {e}")),
+    };
+    if !out.status.success() {
+        die(&format!(
+            "config-init が失敗しました (exit {})",
+            out.status.code().unwrap_or(-1)
+        ));
+    }
+    let text = String::from_utf8_lossy(&out.stdout).to_string();
+
+    // 既にユーザー設定にある鍵は追記しない(既存の値を優先 — §9.5)
+    let existing = std::fs::read_to_string(&cfg_path)
+        .map(|c| crate::config::parse_kv(&c))
+        .unwrap_or_default();
+
+    let mut lines: Vec<String> = Vec::new(); // 追記する行(コメント・空行は素通し)
+    let mut skipped: Vec<String> = Vec::new(); // 設定済みで飛ばした鍵
+    let mut proposed = 0usize;
+    for (i, raw) in text.lines().enumerate() {
+        let line = raw.trim();
+        if line.is_empty() || line.starts_with('#') {
+            lines.push(raw.to_string());
+            continue;
+        }
+        let bad = || -> ! {
+            die(&format!(
+                "config-init の出力 {} 行目が書式外です: {raw}\n  受けるのは `env.KEY = 値` / `secret.KEY = 参照` とコメント・空行だけ (インストール名は書かない — コアが付ける)",
+                i + 1
+            ))
+        };
+        let Some((key, value)) = line.split_once('=') else {
+            bad();
+        };
+        let key = key.trim();
+        let value = value.trim();
+        let valid = key
+            .strip_prefix("env.")
+            .or_else(|| key.strip_prefix("secret."))
+            .is_some_and(|k| {
+                !k.is_empty() && k.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+            });
+        if !valid {
+            bad();
+        }
+        proposed += 1;
+        let full = format!("tree.{name}.{key}");
+        if existing.contains_key(&full) {
+            skipped.push(full);
+            continue;
+        }
+        lines.push(format!("{full} = {value}"));
+    }
+
+    if proposed == 0 {
+        println!("{name} の config-init は何も提案しませんでした");
+        std::process::exit(0);
+    }
+    if !skipped.is_empty() {
+        println!("設定済み (既存の値を優先。追記しません):");
+        for k in &skipped {
+            println!("  {k}");
+        }
+        println!();
+    }
+    let has_new = lines
+        .iter()
+        .any(|l| !l.trim().is_empty() && !l.trim_start().starts_with('#'));
+    if !has_new {
+        println!("提案はすべて設定済みです。追記するものはありません。");
+        std::process::exit(0);
+    }
+
+    println!("ユーザー設定 ({}) への追記案:", cfg_path.display());
+    println!();
+    for l in &lines {
+        println!("  {l}");
+    }
+    println!();
+    print!("追記しますか? [y/N] ");
+    use std::io::Write as _;
+    let _ = std::io::stdout().flush();
+    let mut answer = String::new();
+    let _ = std::io::stdin().read_line(&mut answer);
+    if answer.trim() != "y" {
+        println!("中止しました (何も書いていません)");
+        std::process::exit(1);
+    }
+
+    if let Some(p) = cfg_path.parent() {
+        let _ = std::fs::create_dir_all(p);
+    }
+    // 追記の前に空行を1つ挟む(塊として読めるように。末尾に改行が無い
+    // 既存ファイルの行と癒着しないための保険も兼ねる)
+    let block = format!("\n{}\n", lines.join("\n"));
+    let res = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&cfg_path)
+        .and_then(|mut f| f.write_all(block.as_bytes()));
+    if let Err(e) = res {
+        die(&format!("{} に書けません: {e}", cfg_path.display()));
+    }
+    println!("追記しました: {}", cfg_path.display());
+    println!("  検証: haj secret check --tree {name} / 全景: haj config --tree {name}");
+    std::process::exit(0);
+}
+
 /// `<URL>@<ref>` を分ける。`@` 以降に `/` や `:` が含まれるならそれは ref ではなく
 /// URL の一部(`git@host:...` の形)。
 fn split_ref(arg: &str) -> (String, Option<String>) {
@@ -420,11 +574,11 @@ fn die(msg: &str) -> ! {
 /// 補完(builtin::complete から呼ばれる)。
 pub fn complete(words: &[String]) -> Vec<String> {
     match words.len() {
-        0 => ["install", "update", "list", "remove"]
+        0 => ["install", "update", "list", "remove", "configure"]
             .iter()
             .map(|s| s.to_string())
             .collect(),
-        1 if matches!(words[0].as_str(), "update" | "remove") => {
+        1 if matches!(words[0].as_str(), "update" | "remove" | "configure") => {
             installed().into_iter().map(|(n, _)| n).collect()
         }
         _ => Vec::new(),
