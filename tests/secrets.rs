@@ -2411,3 +2411,162 @@ fn テンプレート宣言はlistとcheckに種別つきで出る() {
         stdout(&out)
     );
 }
+
+// ---- 0.40.0: 自動ログインの連鎖 — cert 委譲の段 (SPEC §10.4) ----
+
+/// 連鎖検証用の偽 vault。token lookup は logged-in マーカーが在るときだけ成功し、
+/// login (OIDC 段) はマーカーを作って記録する。
+fn fake_chain_vault(sb: &Sandbox) -> PathBuf {
+    let d = sb.dir.display().to_string();
+    sb.exe(
+        "bin/vault",
+        &format!(
+            r#"#!/bin/sh
+d="{d}"
+printf '%s\n' "$*" >> "$d/vault-calls"
+case "$1" in
+  token) [ -e "$d/logged-in" ]; exit $? ;;
+  login) echo "$@" >> "$d/login-called"; touch "$d/logged-in"; exit 0 ;;
+  kv) printf 's3cr3t\n'; exit 0 ;;
+esac
+exit 0
+"#
+        ),
+    )
+}
+
+/// 偽の cert 委譲コマンド。呼ばれた証拠と VAULT_ADDR を記録し、ok なら認証を通す。
+fn fake_cert(sb: &Sandbox, name: &str, ok: bool) -> PathBuf {
+    let d = sb.dir.display().to_string();
+    let body = if ok {
+        format!("#!/bin/sh\necho \"addr=$VAULT_ADDR\" >> \"{d}/cert-called\"\ntouch \"{d}/logged-in\"\nexit 0\n")
+    } else {
+        format!("#!/bin/sh\necho \"addr=$VAULT_ADDR\" >> \"{d}/cert-called\"\nexit 1\n")
+    };
+    sb.exe(&format!("bin/{name}"), &body)
+}
+
+#[test]
+fn cert委譲が成功すればoidcに進まず解決できる() {
+    let sb = Sandbox::new("cert-ok");
+    let vault = fake_chain_vault(&sb);
+    let cert = fake_cert(&sb, "cert-ok", true);
+    let cp = sb.show_command();
+    sb.write_file(
+        ".config/haj/config",
+        &format!(
+            "secrets.vault_cert_login = {}\nsecrets.vault_login = -method=oidc\nsecrets.vault_addr = https://vault.example.com\n",
+            cert.display()
+        ),
+    );
+
+    let out = sb.haj(
+        &cp,
+        &["--secret", "HAJ_T_VALUE=vault://secret/data/x/t", "show"],
+        &[("HAJ_VAULT_CMD", vault.to_str().unwrap())],
+    );
+    assert!(out.status.success(), "stderr: {}", stderr(&out));
+    assert_eq!(stdout(&out).trim(), "s3cr3t");
+    let cert_log = read(&sb, "cert-called");
+    assert!(
+        cert_log.contains("addr=https://vault.example.com"),
+        "委譲先に VAULT_ADDR が渡っていない: {cert_log}"
+    );
+    assert!(
+        !sb.dir.join("login-called").exists(),
+        "cert 成功なのに OIDC まで進んでいる"
+    );
+}
+
+#[test]
+fn cert委譲が失敗したら静かにoidcの段へ進む() {
+    let sb = Sandbox::new("cert-fallback");
+    let vault = fake_chain_vault(&sb);
+    let cert = fake_cert(&sb, "cert-fail", false);
+    let cp = sb.show_command();
+    sb.write_file(
+        ".config/haj/config",
+        &format!(
+            "secrets.vault_cert_login = {}\nsecrets.vault_login = -method=oidc\n",
+            cert.display()
+        ),
+    );
+
+    let out = sb.haj(
+        &cp,
+        &["--secret", "HAJ_T_VALUE=vault://secret/data/x/t", "show"],
+        &[("HAJ_VAULT_CMD", vault.to_str().unwrap())],
+    );
+    assert!(out.status.success(), "stderr: {}", stderr(&out));
+    assert_eq!(stdout(&out).trim(), "s3cr3t");
+    assert!(
+        sb.dir.join("cert-called").exists(),
+        "cert 段が呼ばれていない"
+    );
+    assert!(
+        read(&sb, "login-called").contains("-method=oidc"),
+        "OIDC の段に進んでいない"
+    );
+    assert!(
+        stderr(&out).contains("cert 認証は成功しませんでした"),
+        "静かな一行が無い: {}",
+        stderr(&out)
+    );
+}
+
+#[test]
+fn cert未設定なら段をスキップして従来どおりoidcだけ走る() {
+    let sb = Sandbox::new("cert-skip");
+    let vault = fake_chain_vault(&sb);
+    let cp = sb.show_command();
+    sb.write_file(".config/haj/config", "secrets.vault_login = -method=oidc\n");
+
+    let out = sb.haj(
+        &cp,
+        &["--secret", "HAJ_T_VALUE=vault://secret/data/x/t", "show"],
+        &[("HAJ_VAULT_CMD", vault.to_str().unwrap())],
+    );
+    assert!(out.status.success(), "stderr: {}", stderr(&out));
+    assert!(!sb.dir.join("cert-called").exists());
+    assert!(sb.dir.join("login-called").exists(), "OIDC が走っていない");
+    assert!(
+        !stderr(&out).contains("cert 認証"),
+        "未設定なのに cert 段の表示がある: {}",
+        stderr(&out)
+    );
+}
+
+#[test]
+fn storeログインも連鎖でstatusは連鎖の設定を出す() {
+    let sb = Sandbox::new("cert-store");
+    let vault = fake_chain_vault(&sb);
+    let cert = fake_cert(&sb, "cert-ok", true);
+    let cp = sb.dir.join("nonexistent").display().to_string();
+    sb.write_file(
+        ".config/haj/config",
+        &format!(
+            "secrets.vault_cert_login = {}\nsecrets.vault_login = -method=oidc\n",
+            cert.display()
+        ),
+    );
+    let envs = [("HAJ_VAULT_CMD", vault.to_str().unwrap())];
+
+    // status: 連鎖の設定が見える(未ログイン時 exit 1)
+    let out = sb.haj(&cp, &["store", "status"], &envs);
+    assert_eq!(out.status.code(), Some(1));
+    let s = stdout(&out);
+    assert!(
+        s.contains("cert委譲") && s.contains("cert-ok") && s.contains("-method=oidc"),
+        "連鎖の設定が出ない:\n{s}"
+    );
+
+    // login: cert 段が先に走り、成功したら OIDC に進まない
+    let out = sb.haj(&cp, &["store", "login"], &envs);
+    assert!(out.status.success(), "stderr: {}", stderr(&out));
+    assert!(
+        stderr(&out).contains("cert 認証でログインしました"),
+        "cert 成功の表示が無い: {}",
+        stderr(&out)
+    );
+    assert!(!sb.dir.join("login-called").exists(), "OIDC まで進んでいる");
+}
