@@ -5,7 +5,8 @@
 //! 展開される。ツリーは自分の名前を書かない — 明示形(`store://<ツリー名>/...`)は
 //! 無く、ツリーをまたぐ参照は構文レベルで存在しない(またぎは物理参照で)。
 //!
-//! エンジンは haj 全体で1つ(`store.engine`。v1 は vault のみ)。接続・認証・
+//! ストアの設定は表 `store.<名前>.{engine, prefix}` で、v1 で存在する行は予約された
+//! `tree`(store:// が指す)だけ。エンジンは v1 では型名 vault を直接書く。接続・認証・
 //! セッションは物理参照(§10.4)と同じ機構(`secrets.vault_*`)をそのまま使う —
 //! ストアが足すのは名前空間の写像だけで、金庫との話し方は増えない。
 
@@ -23,10 +24,33 @@ const USAGE: &str = "\
         haj store status                ログイン状態と実効設定
 参照は store://<論理パス> (自ツリーの名前空間) か vault://<物理パス>";
 
-/// エンジン名(v1 は vault のみ)。
+/// 旧キー(0.31.0 の store.engine / store.prefix)が設定に残っていたら、
+/// プロセスにつき1回だけ警告して無視する。互換エイリアスは設けない
+/// (採用前の改名。SPEC 追記 0.32.0)。
+fn warn_renamed_keys(cfg: &crate::config::Config) {
+    static WARNED: std::sync::Once = std::sync::Once::new();
+    let old: Vec<&str> = ["store.engine", "store.prefix"]
+        .into_iter()
+        .filter(|k| cfg.has_key(k))
+        .collect();
+    if old.is_empty() {
+        return;
+    }
+    WARNED.call_once(|| {
+        for k in old {
+            eprintln!(
+                "haj: warning: {k} は store.tree.{} に改名されました (無視します)",
+                k.rsplit('.').next().unwrap()
+            );
+        }
+    });
+}
+
+/// ストア `tree` のエンジン(v1 は型名 vault のみ)。
 fn engine() -> String {
-    crate::config::Config::load()
-        .get("HAJ_STORE_ENGINE", "store.engine", DEFAULT_ENGINE)
+    let cfg = crate::config::Config::load();
+    warn_renamed_keys(&cfg);
+    cfg.get("HAJ_STORE_TREE_ENGINE", "store.tree.engine", DEFAULT_ENGINE)
         .0
 }
 
@@ -34,13 +58,14 @@ fn engine() -> String {
 /// 書式は物理参照(vault://)のパスと同じ(KV v2 の /data/ 入り)。
 fn prefix() -> Result<String, String> {
     let cfg = crate::config::Config::load();
-    if let Some((v, _)) = cfg.get_opt("HAJ_STORE_PREFIX", "store.prefix") {
+    warn_renamed_keys(&cfg);
+    if let Some((v, _)) = cfg.get_opt("HAJ_STORE_TREE_PREFIX", "store.tree.prefix") {
         return Ok(v.trim_matches('/').to_string());
     }
     let user = std::env::var("USER")
         .or_else(|_| std::env::var("LOGNAME"))
         .map_err(|_| {
-            "実行ユーザー名が分かりません (USER / LOGNAME)。store.prefix を設定してください"
+            "実行ユーザー名が分かりません (USER / LOGNAME)。store.tree.prefix を設定してください"
                 .to_string()
         })?;
     Ok(format!("secret/data/users/{user}"))
@@ -52,7 +77,7 @@ fn to_physical(logical: &str, tree: &str) -> Result<String, String> {
     let e = engine();
     if e != "vault" {
         return Err(format!(
-            "store.engine = {e} には対応していません (v1 は vault のみ)"
+            "store.tree.engine = {e} には対応していません (v1 は vault のみ)"
         ));
     }
     let segs: Vec<&str> = logical.split('/').filter(|s| !s.is_empty()).collect();

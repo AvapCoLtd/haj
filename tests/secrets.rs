@@ -1641,3 +1641,72 @@ fn 規約フックにはtreeのenvだけ注入されsecretは解決されない(
         "フックへの注入が仕様と違う (env だけのはず):\n{s}"
     );
 }
+
+#[test]
+fn store設定は表形式のキーで効き旧キーは警告して無視される() {
+    let sb = Sandbox::new("store-table");
+    let vault = sb.fake_vault();
+    let cp = sb.dir.join("nonexistent").display().to_string();
+
+    // 新キー store.tree.prefix が写像に効く
+    sb.write_file(".config/haj/config", "store.tree.prefix = kv/data/team\n");
+    let out = sb.haj(
+        &cp,
+        &["store", "get", "store://token"],
+        &[
+            ("HAJ_VAULT_CMD", vault.to_str().unwrap()),
+            ("HAJ_TREE", "tools"),
+            ("USER", "alice"),
+        ],
+    );
+    assert!(out.status.success(), "stderr: {}", stderr(&out));
+    let args = fs::read_to_string(sb.dir.join("vault-args")).unwrap_or_default();
+    assert!(
+        args.contains("-mount=kv") && args.contains("team/trees/tools"),
+        "store.tree.prefix が効いていない:\n{args}"
+    );
+
+    // 旧キー (0.31.0 形) は無視され、警告が出る。写像は既定に戻る
+    sb.write_file(
+        ".config/haj/config",
+        "store.prefix = kv/data/old\nstore.engine = vault\n",
+    );
+    let out = sb.haj(
+        &cp,
+        &["store", "get", "store://token"],
+        &[
+            ("HAJ_VAULT_CMD", vault.to_str().unwrap()),
+            ("HAJ_TREE", "tools"),
+            ("USER", "alice"),
+        ],
+    );
+    assert!(out.status.success(), "stderr: {}", stderr(&out));
+    let args = fs::read_to_string(sb.dir.join("vault-args")).unwrap_or_default();
+    assert!(
+        args.contains("users/alice/trees/tools") && !args.contains("old"),
+        "旧キーが効いてしまっている:\n{args}"
+    );
+    assert!(
+        stderr(&out).contains("store.tree.prefix") && stderr(&out).contains("改名"),
+        "旧キーの警告が出ない: {}",
+        stderr(&out)
+    );
+
+    // 環境変数の写像も新しい名前
+    let out = sb.haj(
+        &cp,
+        &["store", "get", "store://token"],
+        &[
+            ("HAJ_VAULT_CMD", vault.to_str().unwrap()),
+            ("HAJ_TREE", "tools"),
+            ("USER", "alice"),
+            ("HAJ_STORE_TREE_PREFIX", "kv/data/env"),
+        ],
+    );
+    assert!(out.status.success(), "stderr: {}", stderr(&out));
+    let args = fs::read_to_string(sb.dir.join("vault-args")).unwrap_or_default();
+    assert!(
+        args.contains("env/trees/tools"),
+        "HAJ_STORE_TREE_PREFIX が効いていない:\n{args}"
+    );
+}

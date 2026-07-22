@@ -310,7 +310,8 @@ store://<論理パス> は、そのコマンドが属するツリー専用の名
 - シェルから直に store:// を叩くと HAJ_TREE が無いのでエラー。
   点検・横断・移行は物理参照で: haj store get vault://<物理パス>
 
-エンジンは haj 全体で1つ (store.engine。v1 は vault のみ)。接続・認証は
+ストアの設定は表 store.<名前>.* で、v1 の行は予約された tree だけ
+(store.tree.engine / store.tree.prefix。エンジンは v1 は vault のみ)。接続・認証は
 vault:// 参照と同じ機構 (secrets.vault_*) を使う。詳細は SPEC.md §10.7–10.9。"
             .to_string(),
 
