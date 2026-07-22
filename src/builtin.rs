@@ -1,4 +1,4 @@
-//! コア組み込みのコマンド(SPEC.md §9)。
+//`a a! コア組み込みのコマンド(SPEC.md §9)。
 //!
 //! `help` / `commands` / `which` / `selfupgrade` は探索の対象ではなく、コアが自分で
 //! 処理する。だが**どこにいても常に使える**以上、一覧にも補完にも出さなければ嘘になる。
@@ -157,9 +157,14 @@ haj config — 設定の実効値と、その出所を見る。
 
   haj config                        実効値と出所の一覧
   haj config --init                 設定できる鍵と既定値をすべて、雛形として出す(全行コメント)
+  haj config get <キー>              実効値を1行で出す (plumbing。未設定は exit 1)
+  haj config set <キー> <値>         ユーザー設定へ書く (既存キーは行を置換。SPEC §8.5)
   haj config --tree <インストール名>  そのインスタンスの全景: 設定 (tree.*)、store の
                                     名前空間、実効 env (各コマンドの --haj-env、
                                     既定値込み)。金庫には触らない (SPEC §10.8)
+
+meta.* はユーザー定義域 (コアは解釈しない)。ツリー間で共有する「本人についての値」
+の置き場 (例: meta.username = 金庫でのユーザー名)。
 
 雛形はそのままリダイレクトすれば初期化になる:
 
@@ -370,11 +375,17 @@ pub fn complete(name: &str, words: &[String]) -> Vec<String> {
             }
         }
         "config" => match words.last().map(String::as_str) {
-            None => vec!["--init".to_string(), "--tree".to_string()],
+            None => vec![
+                "--init".to_string(),
+                "--tree".to_string(),
+                "get".to_string(),
+                "set".to_string(),
+            ],
             Some("--tree") => crate::tree::installed()
                 .into_iter()
                 .map(|(n, _)| n)
                 .collect(),
+            Some("get") | Some("set") => crate::config::known_keys(),
             _ => Vec::new(),
         },
         // 通常は main::complete が run を先に処理する。ここに来るのは展開済みの

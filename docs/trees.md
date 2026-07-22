@@ -59,7 +59,10 @@ haj-tools/                # 配布専用の形(ルート直下に置く)
   付ける(多重インストール対応)。環境には `HAJ_ROOT` / `HAJ_TREE` /
   `HAJ_USER_CONFIG` が入る。規約フックではないので時間のかかる個人化
   (金庫 CLI で自分のユーザー名を引く等)をしてよい。静的な提案で足りる
-  ツリーは `#!/bin/sh` + `cat <<EOF` の数行で済む
+  ツリーは `#!/bin/sh` + `cat <<EOF` の数行で済む。
+  本人についての値は `haj config get meta.username` を先に見るのが定石
+  (SPEC §8.5 — 無ければ検出し、`haj config set meta.username <名前>` で
+  固定できると stderr で案内する)
 - コマンドの書き方そのものは `haj docs writing-commands`
 
 ```

@@ -2873,3 +2873,119 @@ fn installはconfig_initがあれば入口を案内する() {
         stdout(&out)
     );
 }
+
+// ---- haj config get / set (SPEC §8.5) ----
+
+#[test]
+fn config_setは追記しgetで取れて既存キーは論理行ごと置換される() {
+    let sb = Sandbox::new("config-get-set");
+    let cp = sb.path("nonexistent");
+    let cp = cp.to_str().unwrap();
+
+    // 継続行を含む既存の設定。コメントと他のキーは保たれること
+    sb.write(
+        ".config/haj/config",
+        concat!(
+            "# 先頭のコメント\n",
+            "meta.username = old-name\n",
+            "alias.oci = --secret A=vault://x/a \\\n",
+            "            exec oci\n",
+        ),
+    );
+
+    // 新規キーの追記
+    let out = sb.haj(
+        &sb.dir,
+        cp,
+        &["config", "set", "meta.email", "a@example.com"],
+    );
+    assert!(
+        out.status.success(),
+        "set 失敗: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let got = stdout(&sb.haj(&sb.dir, cp, &["config", "get", "meta.email"]));
+    assert_eq!(got.trim(), "a@example.com", "set した値が get で取れない");
+
+    // 既存キーの置換
+    let out = sb.haj(&sb.dir, cp, &["config", "set", "meta.username", "hajime"]);
+    assert!(out.status.success());
+    let cfg = fs::read_to_string(sb.path(".config/haj/config")).unwrap();
+    assert!(
+        cfg.contains("meta.username = hajime"),
+        "置換されていない:\n{cfg}"
+    );
+    assert!(!cfg.contains("old-name"), "旧値が残っている:\n{cfg}");
+    assert!(cfg.contains("# 先頭のコメント"), "コメントが消えた:\n{cfg}");
+    assert!(cfg.contains("exec oci"), "他のキーの継続行が消えた:\n{cfg}");
+
+    // 継続行を持つキーの置換は継続行ごと消える
+    let out = sb.haj(&sb.dir, cp, &["config", "set", "alias.oci", "exec oci"]);
+    assert!(out.status.success());
+    let cfg = fs::read_to_string(sb.path(".config/haj/config")).unwrap();
+    assert!(
+        cfg.contains("alias.oci = exec oci"),
+        "置換されていない:\n{cfg}"
+    );
+    assert!(
+        !cfg.contains("vault://x/a"),
+        "旧論理行の断片が残っている:\n{cfg}"
+    );
+}
+
+#[test]
+fn config_getはコア既知キーの実効値を出し未設定キーはexit1() {
+    let sb = Sandbox::new("config-get-known");
+    let cp = sb.path("nonexistent");
+    let cp = cp.to_str().unwrap();
+
+    // 既知キー: 何も無ければ既定値
+    let out = sb.haj(&sb.dir, cp, &["config", "get", "hook_timeout_ms"]);
+    assert_eq!(stdout(&out).trim(), "2000", "既定値が出ない");
+
+    // 環境変数が勝つ
+    let out = Command::new(env!("CARGO_BIN_EXE_haj"))
+        .args(["config", "get", "hook_timeout_ms"])
+        .current_dir(&sb.dir)
+        .env("HAJ_COMMAND_PATH", cp)
+        .env("HAJ_NO_CACHE", "1")
+        .env("HOME", &sb.dir)
+        .env_remove("XDG_CONFIG_HOME")
+        .env("HAJ_HOOK_TIMEOUT_MS", "5000")
+        .output()
+        .unwrap();
+    assert_eq!(stdout(&out).trim(), "5000", "環境変数が勝たない");
+
+    // 未設定の未知キーは exit 1
+    let out = sb.haj(&sb.dir, cp, &["config", "get", "meta.nothing"]);
+    assert!(!out.status.success(), "未設定なのに成功した");
+}
+
+#[test]
+fn config_getはtokenの平文を出さず参照なら出す() {
+    let sb = Sandbox::new("config-get-token");
+    let cp = sb.path("nonexistent");
+    let cp = cp.to_str().unwrap();
+
+    sb.write(
+        ".config/haj/config",
+        "selfupgrade.token = glpat-PLAINTEXT\n",
+    );
+    let out = sb.haj(&sb.dir, cp, &["config", "get", "selfupgrade.token"]);
+    assert!(!out.status.success(), "平文トークンが出た");
+    assert!(
+        !stdout(&out).contains("glpat-PLAINTEXT"),
+        "平文が stdout に漏れた"
+    );
+
+    sb.write(
+        ".config/haj/config",
+        "selfupgrade.token = vault://secret/data/haj/token\n",
+    );
+    let out = sb.haj(&sb.dir, cp, &["config", "get", "selfupgrade.token"]);
+    assert_eq!(
+        stdout(&out).trim(),
+        "vault://secret/data/haj/token",
+        "参照が出ない"
+    );
+}
