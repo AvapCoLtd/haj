@@ -1879,3 +1879,129 @@ fn secretゲットの補完は宣言済みキーを出す() {
     assert!(out.status.success());
     assert_eq!(stdout(&out).trim(), "");
 }
+
+#[test]
+fn secretのlistとcheckはtreeフラグで対象を明示できる() {
+    let sb = Sandbox::new("secret-tree-flag");
+    let cp = sb.dir.join("nonexistent").display().to_string();
+    sb.write_file(
+        ".config/haj/config",
+        "tree.work.secret.A_KEY = store://token\ntree.home.secret.B_KEY = vault://secret/data/x/b\n",
+    );
+
+    // --tree で対象を明示(HAJ_TREE なしで動く — 人手の口)
+    let out = sb.haj(&cp, &["secret", "list", "--tree", "work"], &[]);
+    assert!(out.status.success(), "stderr: {}", stderr(&out));
+    assert!(
+        stdout(&out).contains("A_KEY=store://token"),
+        "work の目録が出ない:\n{}",
+        stdout(&out)
+    );
+
+    // --tree > 環境の HAJ_TREE(その場の明示が勝つ)
+    let out = sb.haj(
+        &cp,
+        &["secret", "list", "--tree", "home"],
+        &[("HAJ_TREE", "work")],
+    );
+    assert!(
+        stdout(&out).contains("B_KEY") && !stdout(&out).contains("A_KEY"),
+        "--tree が環境に勝っていない:\n{}",
+        stdout(&out)
+    );
+
+    // check も同様
+    let out = sb.haj(
+        &cp,
+        &["secret", "check", "--tree", "work"],
+        &[("USER", "alice")],
+    );
+    assert!(out.status.success(), "stderr: {}", stderr(&out));
+    assert!(
+        stdout(&out).contains("tree.work.secret") && stdout(&out).contains("trees/work/token"),
+        "check --tree が効かない:\n{}",
+        stdout(&out)
+    );
+
+    // 文脈なしの案内は --tree を教える
+    let out = sb.haj(&cp, &["secret", "list"], &[]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(
+        stderr(&out).contains("--tree"),
+        "--tree の案内が無い: {}",
+        stderr(&out)
+    );
+}
+
+#[test]
+fn secretのgetにはtreeフラグが無い() {
+    let sb = Sandbox::new("secret-get-no-flag");
+    let cp = sb.dir.join("nonexistent").display().to_string();
+    sb.write_file(
+        ".config/haj/config",
+        "tree.work.secret.A_KEY = vault://secret/data/x/a\n",
+    );
+    // capability の壁: 値に触る get の対象は文脈だけで決まる
+    let out = sb.haj(&cp, &["secret", "get", "--tree", "work", "A_KEY"], &[]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(
+        stderr(&out).contains("--tree はありません") && stderr(&out).contains("HAJ_TREE"),
+        "get の --tree 拒否と案内が無い: {}",
+        stderr(&out)
+    );
+}
+
+#[test]
+fn configのtreeフラグはインスタンスの設定と名前空間を出す() {
+    let sb = Sandbox::new("config-tree");
+    let cp = sb.dir.join("nonexistent").display().to_string();
+    sb.write_file(
+        ".config/haj/config",
+        "tree.work.env.MYAPP_ACCOUNT = alice@example.com\ntree.work.secret.CLIENT_SECRET = vault://secret/data/x/c\n",
+    );
+
+    let out = sb.haj(&cp, &["config", "--tree", "work"], &[("USER", "alice")]);
+    assert!(out.status.success(), "stderr: {}", stderr(&out));
+    let s = stdout(&out);
+    assert!(
+        s.contains("tree.work.env.MYAPP_ACCOUNT")
+            && s.contains("alice@example.com")
+            && s.contains("(設定ファイル)"),
+        "env の実効値と出所が出ない:\n{s}"
+    );
+    assert!(
+        s.contains("tree.work.secret.CLIENT_SECRET")
+            && s.contains("vault://secret/data/x/c")
+            && s.contains("宣言"),
+        "宣言が参照のまま出ない:\n{s}"
+    );
+    assert!(
+        s.contains("trees/work/") && s.contains("store の名前空間"),
+        "store の名前空間が出ない:\n{s}"
+    );
+    assert!(
+        !sb.dir.join("vault-args").exists(),
+        "config --tree が金庫に触っている"
+    );
+
+    // シェル環境が勝っている鍵の表示
+    let out = sb.haj(
+        &cp,
+        &["config", "--tree", "work"],
+        &[("USER", "alice"), ("MYAPP_ACCOUNT", "shell@example.com")],
+    );
+    let s = stdout(&out);
+    assert!(
+        s.contains("shell@example.com") && s.contains("シェル環境が優先"),
+        "シェル環境の優先が出ない:\n{s}"
+    );
+
+    // 設定が無いツリーは案内
+    let out = sb.haj(&cp, &["config", "--tree", "nothing"], &[("USER", "alice")]);
+    assert!(out.status.success());
+    assert!(
+        stdout(&out).contains("設定はありません"),
+        "空の案内が無い:\n{}",
+        stdout(&out)
+    );
+}

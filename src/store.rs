@@ -109,10 +109,20 @@ pub fn resolve(rest: &str, tree: Option<&str>) -> Result<String, String> {
         .map_err(|e| format!("store://{rest} (→ vault://{physical}): {e}"))
 }
 
-/// `haj secrets --check` 用の注記。金庫には触らない(写像は手元の設定だけで決まる)。
-pub fn check_note(rest: &str) -> String {
-    match std::env::var("HAJ_TREE").ok().filter(|t| !t.is_empty()) {
-        Some(tree) => match to_physical(rest, &tree) {
+/// `haj config --tree` に見せる、このインスタンスの名前空間(写像先)。
+/// 金庫には触らない(写像は手元の設定だけで決まる)。
+pub fn namespace_display(tree: &str) -> String {
+    match to_physical("<論理パス>", tree) {
+        Ok(p) => format!("vault://{p}  (engine: {})", engine()),
+        Err(e) => format!("({e})"),
+    }
+}
+
+/// `haj secret check` 用の注記。金庫には触らない(写像は手元の設定だけで決まる)。
+/// `tree` は check が解決した対象(`--tree` の明示 > 環境の `HAJ_TREE` — §10.9)。
+pub fn check_note(rest: &str, tree: Option<&str>) -> String {
+    match tree {
+        Some(tree) => match to_physical(rest, tree) {
             Ok(p) => format!("  (→ vault://{p})"),
             Err(e) => format!("  ({e})"),
         },

@@ -389,6 +389,69 @@ pub fn show() {
     println!("形式は key = value ('#' から行末はコメント)。.haj/config と同じです。");
 }
 
+/// `haj config --tree <インストール名>` — そのツリーインスタンスに効く設定の
+/// 実効値と出所(SPEC §10.8)。人手の点検用で、金庫には触らない。
+///
+/// - `.env` は実効値と出所: シェル環境に同名があればそちらが勝つ(§10.8 の
+///   優先順位のとおり。フラグはその場の明示なのでここには出ない)
+/// - `.secret` は**参照のまま**(宣言 — 解決しない。値は `haj secret get`)
+/// - store の名前空間(§10.7 の写像先)も添える — このインスタンスの
+///   `haj store` / `store://` がどこへ行くのかの答え
+pub fn show_tree(tree: &str) {
+    let cfg = Config::load();
+
+    let installed = crate::tree::installed().iter().any(|(n, _)| n == tree);
+    if installed {
+        println!("ツリー: {tree}");
+    } else {
+        println!("ツリー: {tree}  (未インストール — 設定だけがある状態)");
+    }
+    println!(
+        "store の名前空間: {}",
+        crate::store::namespace_display(tree)
+    );
+
+    let envs = cfg.tree_entries(tree, "env");
+    let secs = cfg.tree_entries(tree, "secret");
+    if envs.is_empty() && secs.is_empty() {
+        println!();
+        println!("このツリーの設定はありません (tree.{tree}.*)。");
+        println!("  tree.{tree}.env.KEY    = <値>    平文を環境変数として注入");
+        println!("  tree.{tree}.secret.KEY = <参照>  宣言 (haj secret get <KEY> で引く)");
+        return;
+    }
+
+    let width = envs
+        .iter()
+        .map(|(k, _)| format!("tree.{tree}.env.{k}").len())
+        .chain(
+            secs.iter()
+                .map(|(k, _)| format!("tree.{tree}.secret.{k}").len()),
+        )
+        .max()
+        .unwrap_or(0);
+
+    if !envs.is_empty() {
+        println!();
+        for (k, v) in &envs {
+            let key = format!("tree.{tree}.env.{k}");
+            // 実効値: シェル環境が勝つ(§10.8)。注入は「未設定のときだけ」
+            match std::env::var(k).ok().filter(|s| !s.is_empty()) {
+                Some(shell) => println!("  {key:width$}  {shell}   (シェル環境が優先。設定は {v})"),
+                None => println!("  {key:width$}  {v}   (設定ファイル)"),
+            }
+        }
+    }
+    if !secs.is_empty() {
+        println!();
+        for (k, v) in &secs {
+            let key = format!("tree.{tree}.secret.{k}");
+            // 宣言は参照のまま。解決しない(金庫に触らない)
+            println!("  {key:width$}  {v}   (宣言。値は haj secret get {k})");
+        }
+    }
+}
+
 /// `key = value` を並べただけの形式。`#` から行末はコメント。
 /// **行末の `\` は継続**(シェルや git config と同じ)。継続行は空白1つで繋がる。
 ///

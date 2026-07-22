@@ -12,29 +12,54 @@
 use crate::secrets::Delivery;
 
 const USAGE: &str = "\
-使い方: haj secret get <KEY>    宣言 tree.<HAJ_TREE>.secret.<KEY> を解決して stdout へ
-        haj secret list         宣言の一覧 (KEY=<参照>。値は解決しない)
-        haj secret check        宣言と受け渡しの検証 (金庫に触らない)";
+使い方: haj secret get <KEY>                       宣言 tree.<HAJ_TREE>.secret.<KEY> を解決して stdout へ
+        haj secret list  [--tree <インストール名>]  宣言の一覧 (KEY=<参照>。値は解決しない)
+        haj secret check [--tree <インストール名>]  宣言と受け渡しの検証 (金庫に触らない)";
 
 pub fn run(args: &[String], deliveries: &[Delivery]) -> ! {
     match args.split_first().map(|(a, r)| (a.as_str(), r)) {
         Some(("get", r)) => get(r),
-        Some(("list", _)) => list(),
-        Some(("check", _)) => check(deliveries),
+        Some(("list", r)) => list(r),
+        Some(("check", r)) => check(deliveries, r),
         _ => die(USAGE),
     }
 }
 
-/// 文脈(自分の環境の `HAJ_TREE`)。ツリーの外ではエラー。
+/// 文脈(自分の環境の `HAJ_TREE`)。ツリーの外では None。
 fn tree_ctx() -> Option<String> {
     std::env::var("HAJ_TREE").ok().filter(|t| !t.is_empty())
 }
 
+/// list / check の文脈: 人手用の `--tree <インストール名>` > 環境の `HAJ_TREE`
+/// (SPEC §10.9 — その場の明示が常に勝つ)。get には無い — 値に触る操作の対象
+/// 切り替えを argv で気軽にさせない(取り違えたツリーの秘密を読む事故)。
+/// list / check は金庫に触らない読み取りメタ情報だから、この口が許される。
+fn tree_ctx_args(args: &[String]) -> Option<String> {
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        if a == "--tree" {
+            let Some(t) = it.next().filter(|t| !t.is_empty()) else {
+                die("--tree には値が要ります: --tree <インストール名> (一覧: haj tree list)");
+            };
+            return Some(t.clone());
+        }
+    }
+    tree_ctx()
+}
+
 fn no_context() -> ! {
     die(
-        "haj secret はツリーのコマンドの中でだけ使えます (HAJ_TREE が無い)。\n  \
-         人手の点検なら HAJ_TREE=<インストール名> を明示して実行する (SPEC §10.10)",
+        "haj secret get はツリーのコマンドの中でだけ使えます (HAJ_TREE が無い)。\n  \
+         人手の点検は haj secret list / check --tree <インストール名> で。\n  \
+         人手で値まで引くなら HAJ_TREE=<インストール名> を明示して実行する (SPEC §10.9 / §10.10)",
     );
+}
+
+fn no_context_meta(verb: &str) -> ! {
+    die(&format!(
+        "対象のツリーが分かりません (HAJ_TREE が無い)。\n  \
+         haj secret {verb} --tree <インストール名> で明示する (一覧: haj tree list)"
+    ));
 }
 
 /// 宣言表(`tree.<名前>.secret.*`)。**ユーザー設定からだけ**読む(§10.8)。
@@ -43,6 +68,13 @@ fn declarations(tree: &str) -> Vec<(String, String)> {
 }
 
 fn get(args: &[String]) -> ! {
+    if args.iter().any(|a| a == "--tree") {
+        // capability の壁(SPEC §10.9): 値に触る get の対象は文脈だけで決まる
+        die(
+            "haj secret get に --tree はありません — 値に触る操作の対象は文脈 (HAJ_TREE) だけで決まります。\n  \
+             人手なら HAJ_TREE=<インストール名> を明示して実行する (SPEC §10.9 / §10.10)",
+        );
+    }
     let Some(key) = args.first() else {
         die(USAGE);
     };
@@ -85,9 +117,9 @@ fn plaintext_err(tree: &str, key: &str) -> String {
     )
 }
 
-fn list() -> ! {
-    let Some(tree) = tree_ctx() else {
-        no_context();
+fn list(args: &[String]) -> ! {
+    let Some(tree) = tree_ctx_args(args) else {
+        no_context_meta("list");
     };
     let decls = declarations(&tree);
     if decls.is_empty() {
@@ -104,9 +136,12 @@ fn list() -> ! {
 
 /// `haj secret check` — 何が渡り、何が宣言されているのかを**解決せずに**確かめる
 /// (SPEC §10.6)。金庫に問い合わせないので、ログインもタッチ認証も起きない。
-fn check(deliveries: &[Delivery]) -> ! {
+fn check(deliveries: &[Delivery], args: &[String]) -> ! {
     let mut failed = false;
     let mut printed = false;
+    // 対象は --tree の明示 > 環境の HAJ_TREE(§10.9)。受け渡しの注記と
+    // 宣言の検証の両方が、同じ1つの対象に対して行われる。
+    let tree = tree_ctx_args(args);
 
     // 受け渡しフラグの事前確認(旧 haj secrets --check)
     if !deliveries.is_empty() {
@@ -122,7 +157,7 @@ fn check(deliveries: &[Delivery]) -> ! {
                         };
                         let note = value
                             .strip_prefix("store://")
-                            .map(crate::store::check_note)
+                            .map(|rest| crate::store::check_note(rest, tree.as_deref()))
                             .unwrap_or_default();
                         println!("   {kind:10}  {name:20}  {mark} {value}{note}");
                     }
@@ -138,7 +173,7 @@ fn check(deliveries: &[Delivery]) -> ! {
     }
 
     // 宣言の検証(ツリー文脈があるとき)。写像は手元の設定だけで決まる。
-    if let Some(tree) = tree_ctx() {
+    if let Some(tree) = tree.clone() {
         let decls = declarations(&tree);
         if printed {
             println!();
@@ -152,7 +187,7 @@ fn check(deliveries: &[Delivery]) -> ! {
                 if crate::secrets::is_reference(v) {
                     let note = v
                         .strip_prefix("store://")
-                        .map(crate::store::check_note)
+                        .map(|rest| crate::store::check_note(rest, Some(&tree)))
                         .unwrap_or_default();
                     println!("   {k:width$}  → {v}{note}");
                 } else {
@@ -188,6 +223,14 @@ pub fn complete(words: &[String]) -> Vec<String> {
             Some(tree) => declarations(&tree).into_iter().map(|(k, _)| k).collect(),
             None => Vec::new(),
         },
+        // 人手用の --tree(§10.9)。値はインストール済みツリー名(手元の列挙のみ)
+        Some("list" | "check") if words.len() == 1 => vec!["--tree".to_string()],
+        Some("list" | "check") if words.last().map(String::as_str) == Some("--tree") => {
+            crate::tree::installed()
+                .into_iter()
+                .map(|(n, _)| n)
+                .collect()
+        }
         _ => Vec::new(),
     }
 }
