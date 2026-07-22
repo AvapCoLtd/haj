@@ -132,14 +132,16 @@ impl Config {
         self.map.contains_key(file_key)
     }
 
-    /// ユーザー文脈の宣言(SPEC §10.8)。`user.secret.KEY = <参照>` を
-    /// (KEY, 参照) で名前順に返す。tree.* と同じ権威規則 — ユーザー設定からだけ。
-    pub fn user_secret_entries(&self) -> Vec<(String, String)> {
+    /// ユーザー文脈の宣言(SPEC §10.8)。`user.<kind>.KEY = <値>` を (KEY, 値) で
+    /// 名前順に返す。kind は "secret"(参照)か "template"(tpl パス)。
+    /// tree.* と同じ権威規則 — ユーザー設定からだけ。
+    pub fn user_entries(&self, kind: &str) -> Vec<(String, String)> {
+        let prefix = format!("user.{kind}.");
         let mut v: Vec<(String, String)> = self
             .map
             .iter()
             .filter_map(|(k, val)| {
-                let key = k.strip_prefix("user.secret.")?;
+                let key = k.strip_prefix(&prefix)?;
                 (!key.is_empty() && !key.contains('.') && !val.is_empty())
                     .then(|| (key.to_string(), val.clone()))
             })
