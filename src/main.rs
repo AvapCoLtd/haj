@@ -868,12 +868,54 @@ fn task_which(name: &str, all: bool) -> ! {
     std::process::exit(0);
 }
 
+/// コア自身の圧縮リファレンス(`haj help --quick` の先頭節)。
+/// 例文中心・1操作1行。全文は haj help / haj docs。
+const CORE_QUICKREF: &str = "\
+## haj (コア)
+haj help [<名前>] / haj help --quick        一覧と使い方 / この圧縮リファレンス
+haj <ツリー名>                               そのツリーのコマンド一覧
+haj run [<タスク>]                           プロジェクトのタスク (.haj/tasks / task.*)
+haj env <名前> / haj env <ツリー名>           コマンドが読む環境変数 (--env-file にそのまま渡せる)
+haj secret get|file <KEY>                   宣言された秘密を引く (値 / 0600ファイルのパス)
+haj secret template <KEY> [--out <パス>]    テンプレート宣言を描画して実体化 (パスを出す)
+haj secret tmpdir <名前>                    セッション寿命の管理ディレクトリ (0700) を確保
+haj secret list|check [--tree <名前>]       宣言の目録と検証 (金庫に触らない)
+haj store get|put <論理パス>                自ツリーの金庫名前空間を読み書き (put は stdin)
+haj store login / haj store status          再認証 (連鎖: cert委譲 → OIDC) / 状態と実効設定
+haj config [--tree <名前>] / get / set      設定の実効値と出所 / plumbing の読み書き
+haj tree install|update|list|configure      ツリーの配布・更新・初期設定の提案
+haj docs [<トピック>]                        ドキュメント (fzf があれば選択UI)
+haj which --all <名前>                       どの定義が効いているか (探索の素性)
+haj --secret K=<参照> <名前>                 その実行だけ秘密を注入 (haj secret check で事前確認)";
+
+/// `haj help --quick` — コアとインストール済み全ツリーの圧縮リファレンスを連結する
+/// (SPEC §5)。ツリーの節は規約ファイル `docs/quickref.md`(§9.5)から。
+/// `{TREE}` はインストール名に置換される — 配布物は自分の名前を知らない
+/// (§3.1 の HAJ_TREE と同じ原則)。quickref を持たないツリーは黙って飛ばす。
+fn print_quick_help() {
+    println!("# haj quickref\n");
+    println!("{CORE_QUICKREF}");
+    for (name, dir) in tree::installed() {
+        let path = tree::tree_root(&dir).join("docs").join("quickref.md");
+        let Ok(content) = std::fs::read_to_string(&path) else {
+            continue; // 規約ファイルは任意。無ければ黙って飛ばす
+        };
+        println!("\n## {name}\n");
+        println!("{}", content.replace("{TREE}", &name).trim_end());
+    }
+    let _ = std::io::stdout().flush();
+}
+
 /// `haj help` / `haj help <名前>`
 ///
 /// コマンド一覧は --haj-describe を全コマンドに聞いて自動生成する。
 /// 前後の固定文だけ help.header / help.footer から読む。コマンドを足しても
 /// ヘルプを書き足す必要がない、というのがこの設計の主眼。
 fn print_help(args: &[String]) {
+    if args.first().map(String::as_str) == Some("--quick") {
+        print_quick_help();
+        return;
+    }
     if let Some(topic) = args.first().map(String::as_str) {
         // タスクの使い方(SPEC §9.6): haj help run <名前>
         if topic == "run" {

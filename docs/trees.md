@@ -41,6 +41,7 @@ haj-tools/                # 配布専用の形(ルート直下に置く)
 │   ├── deploy
 │   └── seed
 ├── docs/                 # haj docs に載るmarkdown(任意)
+│   ├── quickref.md       # 圧縮リファレンス。haj help --quick が全ツリー分を連結(任意)
 │   └── onboarding.md
 ├── lib/                  # 共通ライブラリ。コマンドから $HAJ_ROOT/lib/... で読む(任意)
 ├── config-init           # tree.* 設定の初期値提案(実行ファイル・任意)
@@ -63,7 +64,18 @@ haj-tools/                # 配布専用の形(ルート直下に置く)
   本人についての値は `haj config get meta.username` を先に見るのが定石
   (SPEC §8.5 — 無ければ検出し、`haj config set meta.username <名前>` で
   固定できると stderr で案内する)
+- `docs/quickref.md` は**例文中心・1コマンド1〜2行**の圧縮リファレンス。
+  `haj help --quick` がコアと全ツリー分を `## <インストール名>` 見出しで連結して
+  出す(エディタや AI セッションに「いま何ができるか」を一枚で渡す出口)。
+  コマンド例は namespace ツリーなら **`haj {TREE} <名前> ...`** と書く —
+  `{TREE}` は出力時にインストール名へ置換される。flat ツリーは素の
+  `haj <名前> ...` を書く。見出しはコアが付けるので書かない
 - コマンドの書き方そのものは `haj docs writing-commands`
+
+**配布物は自分の名前を知らない。** インストール名は使用者が選ぶ(`--name`)ので、
+ツリーのコード・config-init・quickref にインストール名を書き込んではならない。
+実行時は `HAJ_TREE`(SPEC §3.1)、config-init は鍵の裸書き(コアが前置)、
+quickref は `{TREE}` プレースホルダ — それぞれの層に同じ原則の口がある。
 
 ```
 # config の例
@@ -94,6 +106,57 @@ expose = namespace
 - 配るコマンドは接続先などの設定値をハードコードせず、`VAR="${VAR:-既定値}"` で
   環境変数に昇格して `--haj-env` で申告する(writing-commands §3)。
   `haj env <ツリー名>`(名前なし)で全コマンドの実効値が一覧できる状態を保つ
+
+## 秘密は宣言 + pull(tree.* と haj secret / store)
+
+ツリーのコマンドは秘密を env で受け取らない。**宣言**(ユーザー設定の
+`tree.<インストール名>.secret.KEY = <参照>` / `.template.KEY = <tplパス>`)を
+目録として、**要る瞬間に引く**:
+
+```sh
+token=$(haj secret get MM_TOKEN)                   # 宣言を解決 (宣言に無い KEY はエラー)
+keyfile=$(haj secret file OCI_KEY)                 # ファイル前提の CLI へはパスで
+printf '%s' "$refresh" | haj store put token       # 実行時に得た秘密は自ツリーの store へ
+```
+
+- 平文の設定は `tree.<名前>.env.KEY`(exec 時に注入。展開しない)
+- bao へのログインはコアの連鎖(`secrets.vault_cert_login` → `vault_login`)が
+  拾う。コマンド側の定石は `haj store status >/dev/null 2>&1 || haj store login >&2`
+  の1行(直接 bao を叩く前に)。参照の解決経由なら1行も要らない
+- 初期値は `config-init` で提案し、検証は `haj secret check --tree <名前>` /
+  `haj config --tree <名前>`
+
+## 外部 CLI のラッパー(5段の型)
+
+`oci` / `glab` のような既存 CLI を「資格情報を宣言から引いて」起動するラッパーは、
+この型に収まる:
+
+```sh
+#!/bin/sh
+case "${1:-}" in
+  --haj-describe) echo "外部CLIをツリー宣言の資格情報で起動する"; exit 0 ;;   # 1. 説明
+  --haj-help)     cat <<'EOF'                                                # 2. 使い方
+...
+EOF
+    exit 0 ;;
+  --haj-complete) shift; printf '@delegate\tocic\n'; exit 0 ;;              # 3. 補完は本人へ委譲
+  --haj-env)      printf 'OCI_PROFILE=%s\n' "${OCI_PROFILE:-DEFAULT}"; exit 0 ;;  # 4. 設定の申告
+esac
+KEY_FILE=$(haj secret file OCI_KEY) || exit 1                                # 5. 宣言を pull して exec
+export OCI_CLI_KEY_FILE="$KEY_FILE"
+exec oci "$@"
+```
+
+補完の `@delegate`(SPEC §6)で、ラップしても元 CLI の補完がそのまま効く。
+`--secret-file` を並べたエイリアスからの移行は、この型への置き換えで完了する。
+
+## ツリーの分類(会社固有 vs 汎用)
+
+- **会社・組織の文脈を持つもの**(接続先やロールが組織固有)は、その名前を
+  名乗るツリーに置き、`expose = namespace` で会社文脈を呼び出しの1行に明示する
+- **汎用の道具**(どの環境でも同じ意味)は汎用名のツリーへ。install / update の
+  ような汎用動詞を含むなら、これも `expose = namespace`
+- 迷ったら「このコマンド例を社外の README に貼れるか」— 貼れないなら会社ツリー
 
 ## 多重インストール(インスタンス)
 
