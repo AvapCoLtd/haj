@@ -126,6 +126,12 @@ impl Config {
         v
     }
 
+    /// 鍵が設定ファイルに書かれているか(値の中身は見ない)。
+    /// 改名された旧キーの警告(store.rs)に使う。
+    pub fn has_key(&self, file_key: &str) -> bool {
+        self.map.contains_key(file_key)
+    }
+
     /// 既定値を持たない値(トークンなど)。無ければ None。
     pub fn get_opt(&self, env_key: &str, file_key: &str) -> Option<(String, Source)> {
         if let Ok(v) = std::env::var(env_key) {
@@ -217,16 +223,16 @@ pub const KEYS: &[(&str, &str, &str, &str)] = &[
         "未ログイン時に自動実行する login の引数。off で無効化",
     ),
     (
-        "HAJ_STORE_ENGINE",
-        "store.engine",
+        "HAJ_STORE_TREE_ENGINE",
+        "store.tree.engine",
         crate::store::DEFAULT_ENGINE,
-        "ストアのエンジン (v1 は vault のみ。SPEC §10.7)",
+        "ストア tree のエンジン (v1 は vault のみ。SPEC §10.7)",
     ),
     (
-        "HAJ_STORE_PREFIX",
-        "store.prefix",
+        "HAJ_STORE_TREE_PREFIX",
+        "store.tree.prefix",
         crate::store::DEFAULT_PREFIX_DOC,
-        "ストアの物理プレフィックス (書式は vault:// のパスと同じ。<ユーザー名> は実行ユーザーで埋まる)",
+        "ストア tree の物理プレフィックス (書式は vault:// のパスと同じ。<ユーザー名> は実行ユーザーで埋まる)",
     ),
     (
         "HAJ_GITHUB",
@@ -268,7 +274,7 @@ fn group_title(group: &str) -> &str {
         "" => "コア (探索と規約)",
         "docs" => "docs: ドキュメントの選択UI (SPEC §9.3)",
         "secrets" => "secrets: シークレット参照の解決 (SPEC §10)",
-        "store" => "store: ツリー専用ストア (SPEC §10.7)",
+        "store" => "store: ストアの表 (v1 は予約行 tree のみ。SPEC §10.7)",
         "selfupgrade" => "selfupgrade: haj自身の更新 (SPEC §9.1)",
         other => other,
     }
