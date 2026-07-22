@@ -15,6 +15,7 @@ mod contract;
 mod discovery;
 mod docs;
 mod project;
+mod secret;
 mod secrets;
 mod selfupgrade;
 mod store;
@@ -134,7 +135,7 @@ fn main() {
     // 受け渡しフラグは「本体を実行する」ときと、その dry-run のときにだけ意味がある。
     // それ以外の組み込みに続けて書かれたら使い方の誤り(SPEC §10.2)。
     if !deliveries.is_empty()
-        && !matches!(name, "exec" | "sh" | "secrets" | "run")
+        && !matches!(name, "exec" | "sh" | "secret" | "secrets" | "run")
         && (discovery::is_reserved(name) || name.starts_with('-'))
     {
         die(&format!(
@@ -176,11 +177,18 @@ fn main() {
         "docs" => docs::run(rest),
         // 補完スクリプトを吐く。eval "$(haj completion zsh)" で使う。SPEC.md §9.4。
         "completion" => completion::run(rest),
-        // 何が展開されるのかを、金庫に触らずに確かめる。SPEC.md §10.6。
-        "secrets" => secrets::run(rest, &deliveries),
-        // ツリー専用ストアの読み書きと認証。SPEC §10.9。
-        // store:// は自分の環境の HAJ_TREE で解決する(ツリーのコマンドの中から
-        // `... | haj store put store://token` と合成できる)。
+        // 宣言された秘密を引く(get / list)と、宣言と受け渡しの検証(check)。
+        // SPEC §10.6 / §10.9。文脈は自分の環境の HAJ_TREE。
+        "secret" => secret::run(rest, &deliveries),
+        // 旧名の移行スタブ(SPEC §10.6)。予約語には残す — 探索に明け渡すと、
+        // 旧名で書かれたスクリプトが野良コマンドに落ちる。
+        "secrets" => {
+            eprintln!("haj: secrets は secret check に改名されました: haj secret check");
+            std::process::exit(1);
+        }
+        // 自ツリーのストアの読み書きと認証。SPEC §10.10。
+        // 引数は裸の論理パス。文脈は自分の環境の HAJ_TREE(ツリーのコマンドの
+        // 中から `... | haj store put token` と合成できる)。
         "store" => store::run(rest),
         // コマンドが読む環境変数を中継する(--haj-env)。出力は --env-file に渡せる形式。
         // 「どの環境変数を読むのか」はコマンドの中身の知識なので、コアは聞くだけ。SPEC §4.4。
@@ -604,14 +612,12 @@ fn prepare_proc(
     // haj exec)がここを通るので、探索結果に依存しない変数は一括で注入する。
     contract::apply_runtime_env(&mut proc);
 
-    // ツリーごとの設定注入(SPEC §10.8)。**フラグの適用より先** — その変数が
-    // シェル環境に無いときだけ注入し、フラグは後から上書きするので、優先順位は
-    // フラグ > シェル環境 > tree設定 > コマンド既定値 になる。
+    // ツリーごとの設定注入(SPEC §10.8)。注入は `.env`(平文)だけ — `.secret` は
+    // 宣言であり、コマンドが haj secret get で引く(§10.9)。**フラグの適用より先** —
+    // その変数がシェル環境に無いときだけ注入し、フラグは後から上書きするので、
+    // 優先順位は フラグ > シェル環境 > tree設定 > コマンド既定値 になる。
     if let Some(tree) = tree_ctx {
-        if let Err(e) = store::inject_tree_config(&mut proc, tree) {
-            eprintln!("haj: {e}");
-            std::process::exit(1);
-        }
+        store::inject_tree_env(&mut proc, tree);
     }
 
     // シークレットは**人が明示的に渡すものだけ**(SPEC §10)。環境を勝手に走査しない。

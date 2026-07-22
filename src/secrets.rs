@@ -599,53 +599,6 @@ fn run_cli(mut proc: Proc, cli: &str, stdin: Option<&str>) -> Result<String, Str
         .map_err(|_| format!("{cli} の出力が UTF-8 ではありません"))
 }
 
-/// `haj secrets --check` — **何が渡るのかを、解決せずに**確かめる(SPEC §10.6)。
-///
-/// グローバルフラグ(`--secret` / `--env` / `--secretfile`)で渡そうとしているものを
-/// 列挙する。参照の**対象**(パス)は出すが、**値は解決しない** — 金庫に問い合わせない
-/// ので、OIDC ログインもタッチ認証も起きない(参照そのものは秘密ではない)。
-///
-///   haj --secret DB_PASS=vault://... --env-file ./mig.env secrets --check
-pub fn run(args: &[String], deliveries: &[Delivery]) -> ! {
-    if args.first().map(String::as_str) != Some("--check") {
-        eprintln!(
-            "haj: 使い方: haj [--secret <名前>=<値>]... [--env-file <ファイル>]... \
-             [--secret-file <名前|パス>=<参照|テンプレート>]... secrets --check"
-        );
-        std::process::exit(1);
-    }
-
-    if deliveries.is_empty() {
-        println!("渡すシークレットの指定がありません。");
-        println!("  haj --secret DB_PASS=vault://... --env-file ./mig.env secrets --check");
-        std::process::exit(0);
-    }
-
-    println!(" 実行時に渡るもの (値は解決していません):");
-    for d in deliveries {
-        match d.plan() {
-            Ok(rows) => {
-                for (kind, name, value) in rows {
-                    let mark = if is_reference(&value) { "→" } else { " " };
-                    // store:// はストア参照(SPEC §10.6)— 展開先の物理写像を添える。
-                    // 写像は手元の設定だけで決まるので、金庫には触らない。
-                    let note = value
-                        .strip_prefix("store://")
-                        .map(crate::store::check_note)
-                        .unwrap_or_default();
-                    println!("   {kind:10}  {name:20}  {mark} {value}{note}");
-                }
-            }
-            Err(e) => {
-                eprintln!("haj: {e}");
-                std::process::exit(1);
-            }
-        }
-    }
-    println!("\n (→ が付いたものが展開されます。他は平文としてそのまま渡ります)");
-    std::process::exit(0);
-}
-
 /// リゾルバCLIの決定。環境変数 > 設定ファイル > 既定値(SPEC §8.3)。
 /// OpenBao なら `secrets.vault_cmd = bao` を設定ファイルに書いて差し替える。
 fn cli_for(env_key: &str, file_key: &str, default: &str) -> String {

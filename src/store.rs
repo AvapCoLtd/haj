@@ -1,4 +1,4 @@
-//! シークレットストア(SPEC §10.7–10.9)。
+//! シークレットストア(SPEC §10.7 / §10.10)。
 //!
 //! ストアは、エンジン(金庫)の中に haj が確保する**ツリー・インスタンス専用の
 //! 名前空間**。参照 `store://<論理パス>` は `<prefix>/trees/<HAJ_TREE>/<論理パス>` に
@@ -18,11 +18,11 @@ pub const DEFAULT_ENGINE: &str = "vault";
 pub const DEFAULT_PREFIX_DOC: &str = "secret/data/users/<ユーザー名>";
 
 const USAGE: &str = "\
-使い方: haj store get <参照>            値を stdout へ
-        haj store put [--force] <参照>  stdin から値を読んで書く
-        haj store login                 エンジンにログインする
-        haj store status                ログイン状態と実効設定
-参照は store://<論理パス> (自ツリーの名前空間) か vault://<物理パス>";
+使い方: haj store get <論理パス>            値を stdout へ
+        haj store put [--force] <論理パス>  stdin から値を読んで書く
+        haj store login                     エンジンにログインする
+        haj store status                    ログイン状態と実効設定
+store は常に自分の名前空間 (HAJ_TREE) を操作する: haj store put token";
 
 /// 旧キー(0.31.0 の store.engine / store.prefix)が設定に残っていたら、
 /// プロセスにつき1回だけ警告して無視する。互換エイリアスは設けない
@@ -89,11 +89,11 @@ fn to_physical(logical: &str, tree: &str) -> Result<String, String> {
     Ok(format!("{}/trees/{}/{}", prefix()?, tree, segs.join("/")))
 }
 
-/// ツリー文脈が無いときのエラー(SPEC §10.9 — 3状態の1つ目)。
+/// ツリー文脈が無いときのエラー(SPEC §10.10 — 3状態の1つ目)。
 fn no_context_err(rest: &str) -> String {
     format!(
-        "store://{rest}: store:// はツリーのコマンドの中でだけ使えます (HAJ_TREE が無い)。\n  \
-         点検・横断は物理参照で: haj store get vault://<物理パス>"
+        "store://{rest}: ツリーのコマンドの中でだけ使えます (HAJ_TREE が無い)。\n  \
+         人手の点検・移行なら HAJ_TREE=<インストール名> を明示して実行する (SPEC §10.10)"
     )
 }
 
@@ -123,43 +123,25 @@ pub fn check_note(rest: &str) -> String {
     }
 }
 
-/// ツリーごとの設定注入(SPEC §10.8)。`tree.<名前>.env`(平文・無展開)と
-/// `tree.<名前>.secret`(参照・解決して注入)。**その変数が未設定のときだけ**
-/// 注入する — シェル環境が常に勝ち、グローバルフラグはこの後に適用されるので
-/// さらに勝つ(フラグ > シェル環境 > tree設定 > コマンド既定値)。
-pub fn inject_tree_config(proc: &mut Proc, tree: &str) -> Result<(), String> {
-    let cfg = crate::config::Config::load();
-    for (key, val) in cfg.tree_entries(tree, "env") {
+/// ツリーごとの設定注入(SPEC §10.8)。注入されるのは **`.env`(平文・無展開)だけ**。
+/// `.secret` は宣言であり、注入という経路が無い — コマンドが `haj secret get` で
+/// 引く(§10.9)。**その変数が未設定のときだけ**注入する — シェル環境が常に勝ち、
+/// グローバルフラグはこの後に適用されるのでさらに勝つ
+/// (フラグ > シェル環境 > tree設定 > コマンド既定値)。
+pub fn inject_tree_env(proc: &mut Proc, tree: &str) {
+    for (key, val) in crate::config::Config::load().tree_entries(tree, "env") {
         if std::env::var_os(&key).is_none() {
             proc.env(&key, &val);
         }
     }
-    for (key, val) in cfg.tree_entries(tree, "secret") {
-        if std::env::var_os(&key).is_some() {
-            continue; // シェル環境が勝つ。解決もしない(不要な金庫アクセスをしない)
-        }
-        if !crate::secrets::is_reference(&val) {
-            return Err(format!(
-                "tree.{tree}.secret.{key}: 参照ではありません。\n  \
-                 秘密の平文は設定ファイルに書かない — 平文の設定なら tree.{tree}.env.{key} に"
-            ));
-        }
-        let v = crate::secrets::expand(&val, false, Some(tree))
-            .map_err(|e| format!("tree.{tree}.secret.{key}: {e}"))?
-            .unwrap_or(val);
-        proc.env(&key, v);
-    }
-    Ok(())
 }
 
-/// `haj env` の出所の注記(SPEC §10.8)。tree設定で決まる鍵に行末コメントを付ける。
+/// `haj env` の出所の注記(SPEC §10.8)。注記するのは **`.env` の分だけ** —
+/// 秘密の目録は env とは別物なので `haj secret list`(§10.9)が受け持つ。
 /// コメントは `--env-file` で読み飛ばされるので、出力の互換は保たれる。
-/// `.secret` は**参照のまま**出す(解決しないので金庫にも触らない)。
 pub fn annotate_env(out: &str, tree: &str) -> String {
-    let cfg = crate::config::Config::load();
-    let envs = cfg.tree_entries(tree, "env");
-    let secs = cfg.tree_entries(tree, "secret");
-    if envs.is_empty() && secs.is_empty() {
+    let envs = crate::config::Config::load().tree_entries(tree, "env");
+    if envs.is_empty() {
         return out.to_string();
     }
     out.lines()
@@ -172,7 +154,7 @@ pub fn annotate_env(out: &str, tree: &str) -> String {
             if t.is_empty() || t.starts_with('#') || k.is_empty() {
                 return line.to_string();
             }
-            let in_tree = envs.iter().any(|(e, _)| e == k) || secs.iter().any(|(e, _)| e == k);
+            let in_tree = envs.iter().any(|(e, _)| e == k);
             if std::env::var_os(k).is_some() {
                 // シェル環境が勝っている(tree設定がある鍵にだけ注記する)
                 if in_tree {
@@ -183,16 +165,13 @@ pub fn annotate_env(out: &str, tree: &str) -> String {
             if let Some((_, v)) = envs.iter().find(|(e, _)| e == k) {
                 return format!("{k}={v}   # tree設定 (env)");
             }
-            if let Some((_, v)) = secs.iter().find(|(e, _)| e == k) {
-                return format!("{k}={v}   # tree設定 (secret: 参照のまま)");
-            }
             line.to_string()
         })
         .collect::<Vec<_>>()
         .join("\n")
 }
 
-// ---- haj store(組み込み。SPEC §10.9) ----
+// ---- haj store(組み込み。SPEC §10.10) ----
 
 pub fn run(args: &[String]) -> ! {
     match args.split_first().map(|(a, r)| (a.as_str(), r)) {
@@ -204,21 +183,26 @@ pub fn run(args: &[String]) -> ! {
     }
 }
 
-/// 参照(store:// / vault://)を KV の (パスのセグメント列, フィールド) に落とす。
-/// store:// は**自分の環境の HAJ_TREE** で解決する(SPEC §10.9 — 合成のかたち)。
-fn parse_ref(arg: &str) -> (Vec<String>, String, String) {
-    let physical = if let Some(rest) = arg.strip_prefix("store://") {
-        let Some(tree) = std::env::var("HAJ_TREE").ok().filter(|t| !t.is_empty()) else {
-            die(&no_context_err(rest));
-        };
-        match to_physical(rest, &tree) {
-            Ok(p) => p,
-            Err(e) => die(&e),
-        }
-    } else if let Some(rest) = arg.strip_prefix("vault://") {
-        rest.to_string()
-    } else {
-        die(&format!("参照ではありません: {arg}\n{USAGE}"));
+/// 論理パスを KV の (パスのセグメント列, フィールド, 物理パス) に落とす。
+/// **store は常に自分の名前空間**(自分の環境の HAJ_TREE)を操作する(SPEC §10.10)。
+/// `store://` 前置きは読み飛ばす — 設定から**データとして**受け取った参照
+/// (`TOKEN_OUTPUT=store://token`)をそのまま渡せる。物理参照(vault://)は
+/// 受けない — 点検・横断・移行はツリー文脈の外で・人の明示で(§10.10)。
+fn parse_logical(arg: &str) -> (Vec<String>, String, String) {
+    if arg.strip_prefix("vault://").is_some() {
+        die(
+            "haj store は物理参照 (vault://) を受けません — store は自分の名前空間だけを操作します。\n  \
+             点検 (読み): haj --secret V=vault://... sh 'printf \"%s\\n\" \"$V\"'\n  \
+             移行 (書き): エンジンの CLI で (bao kv put ...)",
+        );
+    }
+    let logical = arg.strip_prefix("store://").unwrap_or(arg);
+    let Some(tree) = std::env::var("HAJ_TREE").ok().filter(|t| !t.is_empty()) else {
+        die(&no_context_err(logical));
+    };
+    let physical = match to_physical(logical, &tree) {
+        Ok(p) => p,
+        Err(e) => die(&e),
     };
     let segs: Vec<String> = physical
         .split('/')
@@ -256,7 +240,7 @@ fn get(args: &[String]) -> ! {
     let Some(arg) = args.first() else {
         die(USAGE);
     };
-    let (path, field, physical) = parse_ref(arg);
+    let (path, field, physical) = parse_logical(arg);
     let cli = crate::secrets::vault_cli();
     if let Err(e) = crate::secrets::ensure_vault_login(&cli) {
         die(&e);
@@ -270,7 +254,7 @@ fn get(args: &[String]) -> ! {
         Err(e) => die(&format!("{cli} を実行できません: {e}")),
     };
     if !out.status.success() {
-        // stderr はそのまま流れている(継いでいる)。物理写像を添える(§10.9)
+        // stderr はそのまま流れている(継いでいる)。物理写像を添える(§10.10)
         die(&format!(
             "{arg} → {cli} kv get {}-field={field} {rel} が失敗しました (vault://{physical})",
             mount.map(|m| format!("-mount={m} ")).unwrap_or_default()
@@ -287,7 +271,7 @@ fn put(args: &[String]) -> ! {
     let Some(arg) = args.iter().find(|a| !a.starts_with('-')) else {
         die(USAGE);
     };
-    let (path, field, physical) = parse_ref(arg);
+    let (path, field, physical) = parse_logical(arg);
     let value = read_secret_stdin();
 
     let cli = crate::secrets::vault_cli();
@@ -379,7 +363,7 @@ fn read_secret_stdin() -> String {
     }
     let v = crate::secrets::trim_newline(buf);
     if v.is_empty() {
-        die("値が空です (stdin から渡してください: ... | haj store put <参照>)");
+        die("値が空です (stdin から渡してください: ... | haj store put <論理パス>)");
     }
     v
 }
@@ -427,8 +411,8 @@ fn status() -> ! {
     println!("cli     {cli}");
     println!("addr    {addr}");
     match std::env::var("HAJ_TREE").ok().filter(|t| !t.is_empty()) {
-        Some(t) => println!("tree    {t}  (store:// は trees/{t}/ に写像)"),
-        None => println!("tree    (無し — store:// はツリーのコマンドの中でだけ使える)"),
+        Some(t) => println!("tree    {t}  (論理パスは trees/{t}/ に写像)"),
+        None => println!("tree    (無し — get / put はツリーのコマンドの中でだけ使える)"),
     }
 
     let logged_in = crate::secrets::vault_proc(&cli)
