@@ -389,15 +389,17 @@ pub fn show() {
     println!("形式は key = value ('#' から行末はコメント)。.haj/config と同じです。");
 }
 
-/// `haj config --tree <インストール名>` — そのツリーインスタンスに効く設定の
-/// 実効値と出所(SPEC §10.8)。人手の点検用で、金庫には触らない。
+/// `haj config --tree <インストール名>` — そのツリーインスタンスの**全景**
+/// (SPEC §10.8)。人手の点検用で、金庫には触らない。
 ///
 /// - `.env` は実効値と出所: シェル環境に同名があればそちらが勝つ(§10.8 の
 ///   優先順位のとおり。フラグはその場の明示なのでここには出ない)
 /// - `.secret` は**参照のまま**(宣言 — 解決しない。値は `haj secret get`)
 /// - store の名前空間(§10.7 の写像先)も添える — このインスタンスの
 ///   `haj store` / `store://` がどこへ行くのかの答え
-pub fn show_tree(tree: &str) {
+/// - `effective_env` は各コマンドの `--haj-env` の節連結(呼び出し側が用意)。
+///   コマンド自身の既定値まで含む実効 env — 「全景」はこれで閉じる
+pub fn show_tree(tree: &str, effective_env: Option<&str>) {
     let cfg = Config::load();
 
     let installed = crate::tree::installed().iter().any(|(n, _)| n == tree);
@@ -418,6 +420,7 @@ pub fn show_tree(tree: &str) {
         println!("このツリーの設定はありません (tree.{tree}.*)。");
         println!("  tree.{tree}.env.KEY    = <値>    平文を環境変数として注入");
         println!("  tree.{tree}.secret.KEY = <参照>  宣言 (haj secret get <KEY> で引く)");
+        show_effective_env(tree, installed, effective_env);
         return;
     }
 
@@ -448,6 +451,30 @@ pub fn show_tree(tree: &str) {
             let key = format!("tree.{tree}.secret.{k}");
             // 宣言は参照のまま。解決しない(金庫に触らない)
             println!("  {key:width$}  {v}   (宣言。値は haj secret get {k})");
+        }
+    }
+    show_effective_env(tree, installed, effective_env);
+}
+
+/// 全景の後半: 各コマンドの `--haj-env` の節連結(コマンドの既定値まで含む)。
+/// 設定ファイルの写しではなく**実態**なので、tree設定・シェル環境の出所注記が
+/// そのまま付いてくる(§10.8 の中継注記)。
+fn show_effective_env(tree: &str, installed: bool, effective_env: Option<&str>) {
+    println!();
+    match effective_env {
+        Some(eff) => {
+            println!("実効 env (各コマンドの --haj-env。コマンドの既定値まで含む):");
+            for line in eff.lines() {
+                println!("  {line}");
+            }
+            println!();
+            println!("(--env-file に渡せる素の形式は: haj env {tree})");
+        }
+        None if installed => {
+            println!("実効 env: (--haj-env に応答するコマンドがありません)");
+        }
+        None => {
+            println!("実効 env: (未インストールのため取得できません)");
         }
     }
 }

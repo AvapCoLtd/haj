@@ -170,7 +170,12 @@ fn main() {
                 let Some(tree) = rest.get(1).filter(|t| !t.is_empty()) else {
                     die("--tree には値が要ります: haj config --tree <インストール名> (一覧: haj tree list)");
                 };
-                config::show_tree(tree);
+                // 実効 env: そのツリーの全コマンドの --haj-env を節連結(SPEC §10.8)。
+                // 金庫には触らないが規約フックは実行する — 既定値の権威はコマンド
+                // 本人にあり、コアは聞くだけ(§4.4)。一覧は実態と一致(§2.4)。
+                let eff =
+                    tree::find(tree).and_then(|dir| env_sections(&tree::tree_commands(tree, &dir)));
+                config::show_tree(tree, eff.as_deref());
             } else {
                 config::show();
             }

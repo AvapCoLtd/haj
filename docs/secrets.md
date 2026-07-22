@@ -121,7 +121,8 @@ token=$(haj store get token)
 - 宣言の一覧は `haj secret list`、検証は `haj secret check`(金庫に触らない)。
   人手の点検は `--tree <インストール名>` で対象を明示できる(get には無い —
   値に触る操作は文脈のみ)。ログインは `haj store login`、状態は `haj store status`
-- そのインスタンスに効く設定の全景(env の実効値と出所・宣言・store の名前空間)は
+- そのインスタンスの全景(tree設定の実効値と出所・宣言・store の名前空間・
+  各コマンドの `--haj-env` による既定値込みの実効 env)は
   `haj config --tree <インストール名>`
 - **物理参照の口は無い。** 点検・横断・移行はツリー文脈の外で・人の明示で:
   `HAJ_TREE=<名前> haj store get token` /
