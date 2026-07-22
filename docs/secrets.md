@@ -69,14 +69,17 @@ cwd には決して書かない。
 ## 金庫の設定(~/.config/haj/config)
 
 ```
-secrets.vault_cmd   = bao                        # CLIの差し替え(既定 vault)
-secrets.vault_addr  = https://vault.example.com  # 環境の VAULT_ADDR / BAO_ADDR が優先
-secrets.vault_login = -method=oidc               # 未ログイン時の自動ログイン。off で無効
+secrets.vault_cmd        = bao                        # CLIの差し替え(既定 vault)
+secrets.vault_addr       = https://vault.example.com  # 環境の VAULT_ADDR / BAO_ADDR が優先
+secrets.vault_cert_login = bao-login-cert             # 未ログイン時、OIDCより先に試す cert 認証の委譲先
+secrets.vault_login      = -method=oidc               # 未ログイン時の自動ログイン(最後の段)。off で無効
 ```
 
-未ログインで `vault://` を解決しようとすると、`secrets.vault_login` の引数で
-`login` が**端末を継いで**自動実行される。認証しない CI で参照を使うなら
-`HAJ_VAULT_LOGIN=off` を置くこと(OIDC はブラウザと人を待つ)。
+未ログインで参照を解決しようとすると、**連鎖**で自動ログインする:
+token lookup → cert 委譲(設定があれば。PIN/タッチのみ・ブラウザ不要)→ OIDC。
+cert 段はコマンドを呼ぶだけの委譲で、失敗しても静かに次の段へ進む。
+認証しない CI で参照を使うなら `HAJ_VAULT_LOGIN=off` を置くこと
+(OIDC はブラウザと人を待つ)。
 
 ## ツリーごとの設定と秘密の宣言(tree.*)
 

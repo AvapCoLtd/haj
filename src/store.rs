@@ -380,6 +380,16 @@ fn read_secret_stdin() -> String {
 
 fn login() -> ! {
     let cli = crate::secrets::vault_cli();
+    // 明示の再認証も自動ログインと同じ連鎖(§10.4): cert 委譲 → OIDC。
+    // token lookup は見ない — login は「いま認証し直す」ための動詞。
+    match crate::secrets::try_cert_login(&cli) {
+        Some(true) => {
+            eprintln!("haj: cert 認証でログインしました");
+            std::process::exit(0);
+        }
+        Some(false) => {} // 静かに次の段へ(try_cert_login が一行出している)
+        None => {}        // cert 段は未設定
+    }
     let (args, _) = crate::config::Config::load().get(
         "HAJ_VAULT_LOGIN",
         "secrets.vault_login",
@@ -387,8 +397,10 @@ fn login() -> ! {
     );
     if args == "off" {
         die(&format!(
-            "ログインの引数が設定されていません (secrets.vault_login = off)。\n  \
-             例: secrets.vault_login = -method=oidc を設定するか、{cli} login を直接実行"
+            "ログインの連鎖に使える段がありません。\n  \
+             cert 委譲: secrets.vault_cert_login = <コマンド> (PIN/タッチのみ。ブラウザ不要)\n  \
+             OIDC:      secrets.vault_login = -method=oidc\n  \
+             を設定するか、{cli} login を直接実行"
         ));
     }
     let args: Vec<&str> = args.split_whitespace().collect();
@@ -420,19 +432,30 @@ fn status() -> ! {
     println!("prefix  {}", prefix().unwrap_or_else(|e| format!("({e})")));
     println!("cli     {cli}");
     println!("addr    {addr}");
+    // 自動ログインの連鎖(§10.4)。「login で再認証」の案内が連鎖を正しく説明する
+    let cfg = crate::config::Config::load();
+    let (cert, _) = cfg.get(
+        "HAJ_VAULT_CERT_LOGIN",
+        "secrets.vault_cert_login",
+        crate::secrets::DEFAULT_VAULT_CERT_LOGIN,
+    );
+    let (oidc, _) = cfg.get(
+        "HAJ_VAULT_LOGIN",
+        "secrets.vault_login",
+        crate::secrets::DEFAULT_VAULT_LOGIN,
+    );
+    let cert = if cert.is_empty() {
+        "(無し)".to_string()
+    } else {
+        cert
+    };
+    println!("auto    token lookup → cert委譲: {cert} → login: {oidc}");
     match std::env::var("HAJ_TREE").ok().filter(|t| !t.is_empty()) {
         Some(t) => println!("tree    {t}  (論理パスは trees/{t}/ に写像)"),
         None => println!("tree    (無し — get / put はツリーのコマンドの中でだけ使える)"),
     }
 
-    let logged_in = crate::secrets::vault_proc(&cli)
-        .args(["token", "lookup"])
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false);
+    let logged_in = crate::secrets::vault_token_valid(&cli);
     if logged_in {
         println!("login   ログイン済み");
         std::process::exit(0);

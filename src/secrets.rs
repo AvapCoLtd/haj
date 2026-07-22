@@ -21,6 +21,10 @@ pub const DEFAULT_VAULT_ADDR: &str = "";
 /// 未ログイン時に自動実行する `login` の引数。既定は off(勝手にログインしない)。
 /// OpenBao/Vault の OIDC を使うなら設定に書く: secrets.vault_login = -method=oidc
 pub const DEFAULT_VAULT_LOGIN: &str = "off";
+/// 未ログイン時、OIDC より先に試す cert 認証の**委譲先コマンド**(SPEC §10.4)。
+/// 空 = 段をスキップ。コアは PKCS#11 等の中身を知らず、呼ぶだけ —
+/// コアが持つ職務は連鎖の順序(token lookup → cert → OIDC)のみ。
+pub const DEFAULT_VAULT_CERT_LOGIN: &str = "";
 /// vault 参照の解決に使う CLI。OpenBao なら設定で secrets.vault_cmd = bao。
 pub const DEFAULT_VAULT_CMD: &str = "vault";
 
@@ -506,6 +510,13 @@ pub(crate) fn vault_cli() -> String {
 /// (bao は BAO_ADDR を先に見る)。空なら何も注入しない。
 pub(crate) fn vault_proc(cli: &str) -> Proc {
     let mut proc = Proc::new(cli);
+    apply_vault_addr(&mut proc);
+    proc
+}
+
+/// VAULT_ADDR / BAO_ADDR の実効値を子プロセスに渡す(vault CLI と、cert 認証の
+/// 委譲先が共用 — 委譲先も「どのサーバに認証するか」を知る必要がある)。
+fn apply_vault_addr(proc: &mut Proc) {
     let has_addr = ["BAO_ADDR", "VAULT_ADDR"]
         .iter()
         .any(|k| env::var(k).map(|v| !v.is_empty()).unwrap_or(false));
@@ -515,35 +526,71 @@ pub(crate) fn vault_proc(cli: &str) -> Proc {
             "secrets.vault_addr",
             DEFAULT_VAULT_ADDR,
         );
-        proc.env("VAULT_ADDR", &addr).env("BAO_ADDR", &addr);
+        if !addr.is_empty() {
+            proc.env("VAULT_ADDR", &addr).env("BAO_ADDR", &addr);
+        }
     }
-    proc
 }
 
 /// vault のログイン状態はプロセスで一度だけ確かめる。参照が何個あっても
 /// `token lookup` と `login` が二度走らないように。
 static VAULT_LOGIN: OnceLock<Result<(), String>> = OnceLock::new();
 
-/// 未ログインなら、設定 `vault_login` の引数で `login` を実行してから解決に進む
-/// (SPEC §10.4)。既定は `off`(勝手にログインしない)。設定すると有効になる。
+/// ログイン済みか(`token lookup`)。静かに確かめるだけ。
+pub(crate) fn vault_token_valid(cli: &str) -> bool {
+    vault_proc(cli)
+        .args(["token", "lookup"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+/// cert 認証の委譲(SPEC §10.4 の連鎖の第2段)。設定 `secrets.vault_cert_login` の
+/// コマンドを**呼ぶだけ**(語分割。先頭がバイナリ — docs.fzf_cmd と同じ流儀)。
+/// VAULT_ADDR / BAO_ADDR の実効値を渡し、端末を継ぐ(PIN やタッチの対話がありうる)。
+/// 成功判定は exit 0 **かつ**直後の token lookup 成功。失敗は静かに false —
+/// 呼び出し側が次の段(OIDC)へ進む。未設定なら None(段ごとスキップ)。
+pub(crate) fn try_cert_login(cli: &str) -> Option<bool> {
+    let (cmd, _) = crate::config::Config::load().get(
+        "HAJ_VAULT_CERT_LOGIN",
+        "secrets.vault_cert_login",
+        DEFAULT_VAULT_CERT_LOGIN,
+    );
+    let words: Vec<&str> = cmd.split_whitespace().collect();
+    let (prog, args) = words.split_first()?;
+    eprintln!("haj: cert 認証を試します: {cmd}");
+    let mut proc = Proc::new(prog);
+    proc.args(args);
+    apply_vault_addr(&mut proc);
+    let ok = proc.status().map(|s| s.success()).unwrap_or(false) && vault_token_valid(cli);
+    if !ok {
+        // 静かに次の段へ(stderr に一行)。委譲先の stderr はそのまま見えている。
+        eprintln!("haj: cert 認証は成功しませんでした (次の段へ)");
+    }
+    Some(ok)
+}
+
+/// 未ログインなら、**連鎖**で自動ログインしてから解決に進む(SPEC §10.4):
+/// token lookup → (設定があれば) cert 委譲 → (設定があれば) OIDC。
+/// どちらも既定では無効(勝手にログインしない)。
 ///
-/// CI は VAULT_TOKEN 等で認証済みの前提(`token lookup` が通る)なので login は
+/// CI は VAULT_TOKEN 等で認証済みの前提(`token lookup` が通る)なので連鎖は
 /// 走らない。認証しない CI で vault 参照を使うなら `HAJ_VAULT_LOGIN=off` を置くこと
-/// (OIDC はブラウザと人を待つ)。
+/// (OIDC はブラウザと人を待つ。cert 段は HAJ_VAULT_CERT_LOGIN= で空にする)。
 pub(crate) fn ensure_vault_login(cli: &str) -> Result<(), String> {
     VAULT_LOGIN
         .get_or_init(|| {
-            let logged_in = vault_proc(cli)
-                .args(["token", "lookup"])
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status()
-                .map(|s| s.success())
-                .unwrap_or(false);
-            if logged_in {
+            if vault_token_valid(cli) {
                 return Ok(());
             }
+            // 第2段: cert 委譲(ブラウザ不要 — PIN/タッチのみ。無人実行向き)
+            if try_cert_login(cli) == Some(true) {
+                return Ok(());
+            }
+            // 第3段: OIDC(人とブラウザを待つ)
             let (args, _) = crate::config::Config::load().get(
                 "HAJ_VAULT_LOGIN",
                 "secrets.vault_login",

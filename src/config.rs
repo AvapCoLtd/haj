@@ -235,6 +235,12 @@ pub const KEYS: &[(&str, &str, &str, &str)] = &[
         "vault サーバ (環境の VAULT_ADDR / BAO_ADDR が優先)",
     ),
     (
+        "HAJ_VAULT_CERT_LOGIN",
+        "secrets.vault_cert_login",
+        crate::secrets::DEFAULT_VAULT_CERT_LOGIN,
+        "未ログイン時、OIDC より先に試す cert 認証の委譲先コマンド (語分割。空でスキップ)",
+    ),
+    (
         "HAJ_VAULT_LOGIN",
         "secrets.vault_login",
         crate::secrets::DEFAULT_VAULT_LOGIN,
