@@ -79,6 +79,23 @@ expose = namespace
   環境変数に昇格して `--haj-env` で申告する(writing-commands §3)。
   `haj env <ツリー名>`(名前なし)で全コマンドの実効値が一覧できる状態を保つ
 
+## 多重インストール(インスタンス)
+
+同じツリーを別名で2つ入れて、アカウントや環境を使い分けられる:
+
+```sh
+haj tree install <URL> --name work
+haj tree install <URL> --name home
+```
+
+コマンドには**インストール名**が `HAJ_TREE` として渡る(SPEC §3.1)。ローカル状態
+(取得したトークンなど)の置き場はこれで分けること — 固定パスに書くと、2つの
+インスタンスが同じファイルを奪い合う:
+
+```sh
+state_dir="${XDG_STATE_HOME:-$HOME/.local/state}/myext/${HAJ_TREE:-default}"
+```
+
 ## 優先順位と素性
 
 同名があれば **プロジェクト > 個人 > インストール済みツリー > HAJ_COMMAND_PATH > PATHのhaj-*** の

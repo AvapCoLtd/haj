@@ -2430,3 +2430,147 @@ fn sh委譲にも実行時変数が渡る() {
         stdout(&out)
     );
 }
+
+// ---- HAJ_TREE(SPEC §3.1): ツリー多重インストールのインスタンス名 ----
+
+/// インストール済みツリーのフィクスチャを git 無しで置く(install は clone する
+/// だけなので、置き場に直接作っても等価 — docs/trees.md の COPY と同じ理屈)。
+fn installed_tree(sb: &Sandbox, name: &str, cmd_name: &str, body: &str) {
+    let rel = format!(".local/share/haj/trees/{name}");
+    sb.command(&rel, cmd_name, body);
+}
+
+#[test]
+fn インストール済みツリーのコマンドにhaj_treeが渡る() {
+    let sb = Sandbox::new("haj-tree");
+    let cp = sb.path("nonexistent");
+    let cp = cp.to_str().unwrap();
+
+    installed_tree(
+        &sb,
+        "tools",
+        "who",
+        &conforming("名乗る", "", "", r#"echo "TREE=${HAJ_TREE:-unset}""#),
+    );
+
+    // 素の探索(flat)でも名前空間の明示形でも、同じインストール名が渡る
+    let flat = sb.haj(&sb.dir, cp, &["who"]);
+    assert_eq!(
+        stdout(&flat).trim(),
+        "TREE=tools",
+        "flat 探索で HAJ_TREE が渡らない"
+    );
+    let ns = sb.haj(&sb.dir, cp, &["tools", "who"]);
+    assert_eq!(
+        stdout(&ns).trim(),
+        "TREE=tools",
+        "名前空間形で HAJ_TREE が渡らない"
+    );
+}
+
+#[test]
+fn 多重インストールでインスタンスごとに別のhaj_treeが渡る() {
+    let sb = Sandbox::new("haj-tree-multi");
+    let cp = sb.path("nonexistent");
+    let cp = cp.to_str().unwrap();
+
+    // 同じ中身のツリーを別名で2つ(--name a / --name b の多重インストール相当)
+    let body = conforming(
+        "状態の置き場を名乗る",
+        "",
+        "",
+        r#"echo "STATE=$HOME/.local/state/myext/${HAJ_TREE:-default}""#,
+    );
+    installed_tree(&sb, "work", "state", &body);
+    installed_tree(&sb, "home", "state", &body);
+
+    let a = stdout(&sb.haj(&sb.dir, cp, &["work", "state"]));
+    let b = stdout(&sb.haj(&sb.dir, cp, &["home", "state"]));
+    assert!(
+        a.trim().ends_with("/myext/work"),
+        "work の状態パスが分かれない: {a}"
+    );
+    assert!(
+        b.trim().ends_with("/myext/home"),
+        "home の状態パスが分かれない: {b}"
+    );
+}
+
+#[test]
+fn ツリー以外のコマンドではhaj_treeが未設定になる() {
+    let sb = Sandbox::new("haj-tree-unset");
+    sb.command(
+        "sys",
+        "who",
+        &conforming("名乗る", "", "", r#"echo "TREE=${HAJ_TREE:-unset}""#),
+    );
+    sb.command(
+        "proj/.haj",
+        "pwho",
+        &conforming("名乗る", "", "", r#"echo "TREE=${HAJ_TREE:-unset}""#),
+    );
+    let cp = sb.path("sys/commands");
+    let cp = cp.to_str().unwrap();
+
+    // 呼び出し元の環境に HAJ_TREE が残っていても、明示的に消される
+    let run = |args: &[&str], cwd: &Path| {
+        Command::new(env!("CARGO_BIN_EXE_haj"))
+            .args(args)
+            .current_dir(cwd)
+            .env("HAJ_COMMAND_PATH", cp)
+            .env("HAJ_NO_CACHE", "1")
+            .env("HOME", &sb.dir)
+            .env_remove("XDG_CONFIG_HOME")
+            .env("HAJ_TREE", "stale") // 前のプロセスの残骸を模す
+            .output()
+            .unwrap()
+    };
+
+    let sys = run(&["who"], &sb.dir);
+    assert_eq!(
+        stdout(&sys).trim(),
+        "TREE=unset",
+        "共通コマンドに HAJ_TREE が漏れた"
+    );
+    let proj = run(&["pwho"], &sb.path("proj"));
+    assert_eq!(
+        stdout(&proj).trim(),
+        "TREE=unset",
+        "プロジェクトのコマンドに HAJ_TREE が漏れた"
+    );
+    // haj exec(外の世界)にも渡さない
+    let ex = run(
+        &["exec", "sh", "-c", "echo TREE=${HAJ_TREE:-unset}"],
+        &sb.dir,
+    );
+    assert_eq!(
+        stdout(&ex).trim(),
+        "TREE=unset",
+        "haj exec に HAJ_TREE が漏れた"
+    );
+}
+
+#[test]
+fn 規約フックにもhaj_treeが渡る() {
+    let sb = Sandbox::new("haj-tree-hook");
+    let cp = sb.path("nonexistent");
+    let cp = cp.to_str().unwrap();
+
+    installed_tree(
+        &sb,
+        "tools",
+        "who",
+        r#"#!/bin/sh
+case "$1" in
+  --haj-describe) echo "tree=${HAJ_TREE:-unset}"; exit 0 ;;
+esac
+true
+"#,
+    );
+
+    let list = stdout(&sb.haj(&sb.dir, cp, &["tools"]));
+    assert!(
+        list.contains("tree=tools"),
+        "フックに HAJ_TREE が渡っていない:\n{list}"
+    );
+}
