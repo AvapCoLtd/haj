@@ -120,7 +120,8 @@ haj selfupgrade 0.39.0     # 版を指定(ダウングレードもこれ)
 
 ## チュートリアル
 
-`haj-credless` ツリー(公開予定)を入れて、`oci` を資格情報レスで動かすまで。
+[haj-credless](https://github.com/AvapCoLtd/haj-credless) ツリーを入れて、`oci` を
+資格情報レスで動かすまで。
 
 **1. Vault への接続を設定する**(`~/.config/haj/config`):
 
@@ -216,6 +217,13 @@ haj tree remove haj-tools                              # 消す
 
 install は URL を自分で打つ行為 = 信頼の表明なので、知らないツリーを入れるときは
 中身を読むこと。
+
+公開している公式ツリー(実物のリファレンスにもなる):
+
+- [haj-credless](https://github.com/AvapCoLtd/haj-credless) — 資格情報を手元に留めない
+  CLI 群(glab / gh / oci / aws / kc / ssh-load)。チュートリアルで使っているのもこれ
+- [haj-new](https://github.com/AvapCoLtd/haj-new) — コマンド・タスク・ツリーの雛形を作る
+  (自分のツリーを作り始める入口)
 
 → ツリーの作り方(リポジトリの形、config-init、quickref、コアがツリーに提供する
 機能の全景): [ツリーの作り方と配布](docs/trees.md)(`haj docs trees`)
